@@ -1,0 +1,9 @@
+{
+  "comment": "LCD 显示配置。runtime_mode: 1=角度+RGB, 2=角度+custom_text, 3=角度, 4=custom_text+角度。",
+  "startup": {
+    "row0": "  Hello World!",
+    "row1": "  ESP32-S3 OK!"
+  },
+  "runtime_mode": 1,
+  "custom_text": "  Ready!"
+}

@@ -1,0 +1,11 @@
+build/
+tempImage/
+*.jpg
+*.png
+*.gif
+.claude/
+*.pyc
+__pycache__/
+.espressif/
+dependencies.lock
+components/esp-mqtt

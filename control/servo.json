@@ -1,0 +1,10 @@
+{
+  "comment": "舵机角度映射配置。ec11_min/max 是编码器输入范围，servo_min/max 是舵机实际输出范围。",
+  "initial_angle": 90,
+  "ec11_to_servo": {
+    "ec11_min": 0,
+    "ec11_max": 180,
+    "servo_min": 0,
+    "servo_max": 180
+  }
+}
