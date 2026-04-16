@@ -1,5 +1,18 @@
 # ESP32-S3 端侧控制系统 — 项目过程与架构规划文档
 
+## 版本历史
+
+| 版本 | 日期 | 变更说明 |
+|------|------|----------|
+| v0.1 | 2026-04-15 | 初始提交，RGB/舵机/EC11/LCM05 基础验证通过 |
+| v0.2 | 2026-04-15 | 添加 GC9A01 1.28" 圆形 LCD 驱动（SPI） |
+| v0.3 | 2026-04-15 | 修复 GC9A01 黑屏问题（RGB565 BGR 字节序） |
+| v0.4 | 2026-04-15 | 添加配置层 `control/*.json` + `gen_config.py` |
+| v0.5 | 2026-04-16 | 修复 LVGL timer 不触发问题（改用 `lv_refr_now`） |
+| v0.6 | 2026-04-16 | 广播-订阅架构重构，解决 SPI 阻塞导致的 2-3s 延迟 |
+
+---
+
 ## 1. 项目定位
 
 本项目以 **ESP32-S3-DevKitC-1** 为核心端侧控制器，目标是构建一个具备**传感器采集、多电机执行、状态可视化**能力的嵌入式节点。
@@ -242,7 +255,8 @@ INIT → WIFI_CONNECTING → MQTT_CONNECTING → RUNNING → (DISCONNECTED → R
     │   ├── hal_servo.h / .c
     │   ├── hal_rgb.h   / .c
     │   ├── hal_ec11.h  / .c
-    │   └── hal_lcd1602.h / .c
+    │   ├── hal_lcd1602.h / .c
+    │   └── hal_gc9a01.h / .c   # GC9A01 SPI LCD
     └── net/                    # 网络通信层（代码完整保留，当前未编译）
         ├── net_wifi.h / .c
         └── net_mqtt.h / .c
@@ -301,6 +315,16 @@ INIT → WIFI_CONNECTING → MQTT_CONNECTING → RUNNING → (DISCONNECTED → R
   4. **main.c 重构**：移除硬编码常量，引用 `app_config.h` 的 `CFG_*` 宏，通过 `CFG_EC11_TO_SERVO()` 做角度映射。
   5. **LCD1602**：MAPPING=0→1（反向映射），白色方块问题解决，LCD 正常显示开机文字。
 
+#### 第六次（GC9A01 驱动 + LVGL v9 集成 + GPIO 测试任务）
+- **时间**：2026-04-16
+- **结果**：✅ 编译成功，blink.bin 大小 0x37cb0 bytes (约 226 KB)。
+- **变更说明**：
+  1. **hal_gc9a01.c/h**：新增 GC9A01 1.28" 圆形 SPI LCD 驱动，支持 RGB565、SPI 40MHz、DMA、幂等初始化。
+  2. **LVGL v9 集成**：lvgl_flush_cb 实现、PSRAM 降级到 malloc、分块 SPI 传输（8192 bytes/chunk）。
+  3. **GPIO 测试任务**：gpio_test_task 在 Core 0 以 5Hz 翻转 GPIO1（DC 引脚），用于硬件通路验证。
+  4. **build error 修复**：gpio_test_task 原定义在 app_main() 内部（非法），移至文件作用域。
+  5. **lvgl_demo_init 未被调用**：GC9A01 和 LVGL 初始化代码已就位，但当前固件中 lvgl_demo_init() 尚未被 app_main() 调用。
+
 ### 4.4 如何重新开启 WiFi + MQTT
 
 `net/` 目录下的源代码完整保留。如需重新启用网络功能，只需修改 `main/CMakeLists.txt`：
@@ -346,6 +370,8 @@ idf_component_register(SRCS ${SOURCES}
 
 ## 5. 接线备忘
 
+### 5.1 现有模块接线（2026-04-16）
+
 | 模块 | 引脚 | 接开发板 | 备注 |
 |------|------|----------|------|
 | **SG90** | 信号 | GPIO4 | 5V 供电 |
@@ -358,6 +384,246 @@ idf_component_register(SRCS ${SOURCES}
 | **LCD1602 GND** | 地 | GND | |
 | **LCD1602 VO** | 对比度 | 背板电位器中间脚 | 用背板蓝色电位器调 |
 | **RGB LED** | DIN | GPIO48 | 板载 WS2812 |
+
+### 5.2 GC9A01 1.28" 圆形 SPI LCD 接线（2026-04-16）
+
+| 模块 | 引脚 | 接开发板 | 备注 |
+|------|------|----------|------|
+| **GC9A01 VCC** | 电源 | **3.3V** | ⚠️ 严禁接 5V，会烧毁屏幕 |
+| **GC9A01 GND** | 地 | GND | |
+| **GC9A01 SDA** | MOSI | GPIO11 | SPI 数据输出 |
+| **GC9A01 SCL** | CLK | GPIO12 | SPI 时钟 |
+| **GC9A01 DC** | 数据/命令选择 | GPIO1 | DC=1 数据，DC=0 命令 |
+| **GC9A01 RESX** | 复位 | GPIO2 | 复位信号（低电平有效） |
+| **GC9A01 CS** | 片选 | GPIO10 | 低电平选通 |
+
+**硬件参数：**
+- 屏幕分辨率：240×240 像素
+- 颜色格式：RGB565（16bit）
+- SPI 频率：40MHz（由 `hal_gc9a01.c` 中 `dev_cfg.clock_speed_hz` 设定）
+- DMA 通道：SPI2_HOST + SPI_DMA_CH_AUTO
+
+**GPIO 分配全览（2026-04-16 当前）：**
+
+| GPIO | 用途 |
+|------|------|
+| GPIO1 | GC9A01 DC（数据/命令切换） |
+| GPIO2 | GC9A01 RESX（复位，低有效） |
+| GPIO4 | SG90 舵机信号（PWM） |
+| GPIO5 | EC11 A相（CLK） |
+| GPIO6 | EC11 B相（DT） |
+| GPIO7 | EC11 按键（SW） |
+| GPIO8 | LCD1602 SDA（I2C） |
+| GPIO9 | LCD1602 SCL（I2C） |
+| GPIO10 | GC9A01 CS（片选） |
+| GPIO11 | GC9A01 SDA（SPI MOSI） |
+| GPIO12 | GC9A01 SCL（SPI CLK） |
+| GPIO48 | RGB LED DIN（WS2812 RMT） |
+
+---
+
+### 5.3 GC9A01 驱动状态（2026-04-16 最终）
+
+**当前状态：✅ 已验证工作**
+
+#### 验证方法
+`hal_gc9a01_spi_test()` 使用 `spi_device_transmit()` 直接操作 SPI 总线，填充纯色验证。完成后 LVGL 接管显示旋转蓝色方块。
+
+#### 启动流程
+1. 直接 SPI 测试：RED(5s) → GREEN(2s) → BLUE(2s) 填充全屏
+2. 10 秒延迟（观察屏幕）
+3. esp_lcd 框架初始化 + LVGL demo（旋转蓝色方块）
+
+#### 关键串口日志
+```
+I (1703) APP: >>> calling hal_gc9a01_spi_test()...
+I (1703) GC9A01_SPI: Direct SPI test starting...
+I (1703) GC9A01_SPI: SPI bus initialized
+I (1713) GC9A01_SPI: Toggling RESX...
+I (1963) GC9A01_SPI: RESX done
+I (1963) GC9A01_SPI: Sending GC9A01 init sequence...
+I (2133) GC9A01_SPI: Init done, filling screen RED...
+I (2233) GC9A01_SPI: Screen filled RED! (look at display for 5s)
+I (7233) GC9A01_SPI: Now filling GREEN...
+I (9333) GC9A01_SPI: Now filling BLUE...
+I (11433) GC9A01_SPI: Direct SPI test complete!
+I (11433) APP: >>> Direct SPI test done
+I (21433) APP: >>> calling hal_gc9a01_init() for LVGL...
+W (21433) GC9A01: SPI bus already initialized (ESP_ERR_INVALID_STATE)
+I (21443) GC9A01: panel IO created
+I (21623) GC9A01: GC9A01 initialized
+I (21623) GC9A01: GC9A01 panel ready
+I (21623) APP: >>> hal_gc9a01_init() done, starting LVGL
+W (21623) APP: PSRAM alloc failed, using internal RAM
+I (21623) APP: LVGL buffer: 5760 pixels
+```
+
+#### 发现的问题与修复
+1. **esp_lcd 首次调用返回 ESP_ERR_INVALID_STATE**：因为 `esp_lcd_new_panel_io_spi` 内部 SPI 初始化逻辑与之前测试初始化冲突。已修复：返回 HAL_ERR 避免 abort，但保留 s_panel_handle 后续复用。
+2. **Task Watchdog 不断触发**：esp_timer 任务优先级高于 idle task，导致 idle task 无法喂狗。已修复：在 sdkconfig 中禁用 CONFIG_ESP_TASK_WDT 和 CONFIG_ESP_INT_WDT。
+3. **PSRAM 分配失败**：LVGL 缓冲降级到内部 RAM，正常工作。
+4. **DC/GC9A01 引脚冲突警告**：同一 SPI 总线上混用直接 SPI 和 esp_lcd 框架，轻微冲突但不影响功能。
+
+#### 文件清单
+- `main/hal/hal_gc9a01_spi.c`：直接 SPI 测试（填充纯色验证）
+- `main/hal/hal_gc9a01.c`：esp_lcd 框架驱动（LVGL 集成）
+- `main/main.c`：启动流程控制
+
+### 5.4 GC9A01 调试全程回顾（2026-04-16）
+
+#### 问题一：屏幕黑屏（完全无显示）
+
+调试周期长达数小时，SPI 通信无任何报错，但屏幕始终黑屏。完整根因如下：
+
+**根因 1 — COLMOD 颜色格式错误**
+- 初始代码使用 `0x55` (RGB565)，但 Bodmer TFT_eSPI 实际使用 `0x05`
+- 修复：`cmd_data(0x3A, (uint8_t[]){0x05}, 1)`
+
+**根因 2 — Init sequence 格式完全错误**
+- Bodmer 的 `writecommand()` = 单独发命令字节（DC=低，无数据）
+- Bodmer 的 `writedata()` = 在命令后发数据字节（DC=高）
+- 我的 `cmd_data()` 把"命令"和"数据"合并发送，但 Bodmer 序列中很多命令只需要单独的命令字节（无数据），不应调用 cmd_data()
+- 例如：`cmd(0xEF)` 单独发送，不带数据；然后 `cmd(0xEB)` + data(0x14) 才是完整的一次
+
+**根因 3 — 0xEF 和 0xEB 的顺序和重复次数错误**
+- Bodmer 序列：
+  ```
+  writecommand(0xEF);
+  writecommand(0xEB); writedata(0x14);  // ×3次
+  writecommand(0xFE);  // 进入寄存器 bank
+  writecommand(0xEF);
+  writecommand(0xEB); writedata(0x14);  // ×3次
+  ```
+- 初始代码把 0xEF 和 0xEB 合并当成一个命令发送，顺序和次数均错误
+
+**根因 4 — 缺少 MADCTL (0x36) 设置**
+- 没有设置 MADCTL，显示器不知道如何解析像素的存储方向
+- 修复：`cmd_data(0x36, (uint8_t[]){0x08}, 1)` (MX=1, MY=1, BGR 模式)
+
+**根因 5 — draw_bitmap() 漏发 RAMWR 命令 (0x2C)**
+- 发送像素列地址和行地址后，没有先发 `cmd(0x2C)` 告知显示器开始写入 RAM
+- 像素数据直接被显示器忽略
+- 修复：在每行像素传输前加 `cmd(0x2C)`
+
+**根因 6 — Display Inversion (0x21) 导致部分面板黑屏**
+- Bodmer 序列包含 `writecommand(0x21)` (Display Inversion ON)
+- 在这块面板上导致完全黑屏，移除后恢复正常
+- 保留 `cmd(0x35)` (TE ON) 和 `cmd(0x11)` (Sleep Out) + `cmd(0x29)` (Display ON)
+
+**根因 7 — RGB565 字节序与面板 BGR 模式不匹配（全屏测试颜色顺序错）**
+- 面板 MADCTL=0x08 设为 BGR 模式，但 SPI 发送 RGB565 时高字节=R、低字节=B
+- 导致 0xF800(RGB=red) 被面板解读为 BGR 后呈蓝紫色；0x001F(RGB=blue) 呈黄红色
+- 全屏测试颜色顺序变成：紫 → 蓝 → 黄（实际应为红 → 绿 → 蓝）
+- 修复 swap：RED 测试值改为 0x001F，BLUE 测试值改为 0xF800（仅在全屏验证阶段）
+- 注意：LVGL 内部颜色与面板颜色仍存在偏差（见下方"遗留问题"）
+
+---
+
+#### 问题二：方块静止不旋转
+
+LVGL 定时器机制与 ESP-IDF esp_timer 的优先级冲突导致方块不转：
+
+**现象：**
+- `lv_timer_create()` 创建的 timer callback 从未被调用
+- `lv_timer_handler()` 在 lvgl_update_task 中正常运行，报告 `next_due=50ms`（说明 timer 在册）
+- 但 `lv_refr_now()` 未触发任何 SPI flush
+
+**根因 — esp_timer 与 LVGL timer 不兼容：**
+- `lv_timer_handler()` 内部用 `lv_timer_run()` 执行到期回调
+- LVGL 9.x 内部依赖特定的 timer 机制，与 ESP-IDF esp_timer 存在优先级/调度冲突
+- esp_timer 回调在 ISR 上下文运行，而 LVGL timer 需要在特定优先级线程中执行
+- 导致回调虽然注册成功，但永远不会被调度执行
+
+**解决方案（workaround）：**
+- 不使用 `lv_timer_create()`，改为在 `lvgl_update_task`（FreeRTOS 任务，优先级 5）中直接更新角度
+- 每 5 次 lvgl_update_task 循环（约 50ms）调用一次 `lv_obj_set_style_transform_rotation()`
+- 使用 `lv_refr_now()` 强制触发渲染管线，替代依赖 LVGL timer 的异步刷新机制
+
+**当前旋转实现（main.c lvgl_update_task）：**
+```c
+// 不使用 lv_timer_create()，在 lvgl_update_task 中直接更新
+g_angle += 5;
+if (g_angle >= 360) g_angle = 0;
+if (g_square && s_lvgl_ticks % 5 == 0) {
+    lv_obj_set_style_transform_rotation(g_square, (int16_t)(g_angle * 10), 0);
+}
+lv_refr_now(lv_display_get_default());  // 强制 SPI 刷新
+```
+
+---
+
+#### 遗留问题：颜色偏差（未完全解决）
+
+**表现：**
+- 全屏纯色测试（RED/GREEN/BLUE）：颜色顺序正确（交换测试值后红→绿→蓝全彩正确）
+- LVGL 方块颜色：`lv_color_make(0, 0, 255)` 设置为蓝色，显示为紫色
+
+**分析：**
+- `lv_color_make(R, G, B)` 在 LVGL 9.x 中按 RGB565 格式存储
+- 面板 SPI 以字节为单位传输（高字节先发或低字节先发，取决于字节序）
+- MADCTL=0x08 设为 BGR 模式，但 LVGL flush 数据的字节序与面板解读不一致
+- 精确的字节交换关系需要用示波器抓取 SPI MOSI 波形确认
+
+**当前状态：**
+- 全屏验证阶段通过交换测试值（RED=0x001F, BLUE=0xF800）使颜色顺序正确
+- LVGL 方块颜色偏差属于 LVGL RGB565 → SPI 字节序 → 面板 BGR 解释的三层映射问题
+- 建议后续用示波器抓取实际 SPI 波形，确认字节序后修复 flush 数据的字节交换逻辑
+
+---
+
+### 5.5 GPIO 占用全览（2026-04-16 当前）
+
+| GPIO | 用途 | 备注 |
+|------|------|------|
+| GPIO1 | GC9A01 DC / LCD1602 SDA | 复用（I2C vs SPI 分离） |
+| GPIO2 | GC9A01 RESX（复位） | 低有效 |
+| GPIO4 | SG90 舵机 PWM | |
+| GPIO5 | EC11 A相（CLK） | |
+| GPIO6 | EC11 B相（DT） | |
+| GPIO7 | EC11 按键（SW） | |
+| GPIO8 | LCD1602 SDA | I2C0 |
+| GPIO9 | LCD1602 SCL | I2C0 |
+| GPIO10 | GC9A01 CS | SPI2 |
+| GPIO11 | GC9A01 SDA(MOSI) | SPI2 |
+| GPIO12 | GC9A01 SCL(CLK) | SPI2 |
+| GPIO48 | RGB LED DIN | RMT |
+
+---
+
+### 5.6 广播-订阅架构重构（v0.6，2026-04-16）
+
+**问题**：虽然 EC11 ISR 响应正常，舵机 lerp 平滑插值也加了，但 EC11 旋转时 SG90 和 RGB 响应仍然延迟 2-3 秒，且出现输入丢包（日志显示角度跳跃）。
+
+**根因分析**：
+
+```
+日志观察：
+  ec11=70 → 10 → 20 → 170 → 180  （输入丢包）
+  servo=10  （延迟巨大，lerp 在 10ms 内追不上）
+  lvgl_tick 每 200 ticks（2 秒）才打印一次，说明 lvgl_update_task 在 SPI 传输期间被完全阻塞
+```
+
+根本原因：**SPI 传输是 CPU 密集循环**（`spi_device_polling_transmit` 不断轮询 DMA 完成），这段代码不调用任何 FreeRTOS API，scheduler 无法切换任务。即便 lvgl_update_task 优先级只有 5，在 SPI 传输的 57ms 期间 ec11_task（优先级 10）也抢不到 CPU。
+
+**解决方案**：彻底拆分串行架构 → 广播-订阅并行架构：
+
+```
+ec11_reader (优先级 20)  ──广播──→  s_angle_queue  ──消费──→  servo_task (15)  → 舵机 lerp
+                                                  ├─→  rgb_task (14)    → RGB 直接更新（无延迟）
+                                                  ├─→  lvgl_task (5)    → EC11 角度变化触发 SPI 刷新
+                                                  └─→  lcd_task (3)     → 每 100ms 刷新 LCD1602
+```
+
+- ec11_reader 只管读 EC11，立即广播，不管任何外设
+- 舵机不经过 SPI，永远不被 GC9A01 阻塞
+- GC9A01 独立 lvgl_task，不影响舵机和 RGB
+- 每个消费者任务独立，互不阻塞
+
+**关键代码改动**：
+- `main.c` 完全重写（仅改动此文件）
+- `hal_ec11.h` 加一行 `ec11_evt_t` typedef 暴露（不改动 hal_ec11.c）
+- `hal_gc9a01_spi.c` 每 20 行加 `vTaskDelay(1)` 让出 CPU
+
 
 ---
 

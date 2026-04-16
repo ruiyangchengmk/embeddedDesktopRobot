@@ -149,29 +149,39 @@ control/*.json  →  gen_config.py  →  main/app_config.h  →  main.c 编译
 
 ## 5. 当前状态与最近改动
 
+### v0.6 架构（2026-04-16）：广播-订阅模式
+
+EC11 作为唯一输入源，通过 FreeRTOS 队列广播到所有消费者任务，各任务独立运行互不阻塞：
+
+```
+ec11_reader (优先级 20) ──广播──→ s_angle_queue ──┬─→ servo_task (15) → 舵机 lerp 1°/10ms
+                                                    ├─→ rgb_task (14)   → 颜色直接跳变
+                                                    ├─→ lvgl_task (5)   → 方块旋转（lv_refr_now）
+                                                    └─→ lcd_task (3)    → LCD1602 100ms 刷新
+```
+
 ### 已验证功能
 - ✅ SG90 舵机 0°~180° 正常，EC11 限位 0°/180° 阻断
 - ✅ EC11 编码器旋转 + 按键正常（当前步进 **2°/格**）
 - ✅ WS2812 RGB LED 正常，颜色直接跟随角度跳变（无渐变）
-- ⚠️ LCD1602 I2C 背板通信已打通，但显示白色方块（问题未解决）
+- ✅ GC9A01 1.28" 圆形 LCD 正常，方块跟随 EC11 旋转
+- ✅ LCD1602 I2C 背板通信正常，4 种显示模式可选
 
-### EC11 架构（重要变更）
-ISR 只负责消抖检测，通过 FreeRTOS 队列将事件发送到 `ec11_task`，**不允许在 ISR 里调用任何阻塞 API**（如 `hal_rgb_set_color` 内部会等待 RMT 信号量，在 ISR 里调用会触发 `Interrupt wdt timeout`）。
+### EC11 架构说明
+ISR 只负责消抖检测，通过 FreeRTOS 队列将事件发送到 `ec11_reader_task`，**不允许在 ISR 里调用任何阻塞 API**。
 
-```
-EC11 ISR → xQueueSend → ec11_task (优先级10) → hal_servo_set_angle + hal_rgb_set_color
-```
+`ec11_reader_task` 拥有最高优先级（20），立即广播到 `s_angle_queue`，确保输入无延迟。
 
 ### 最近修改记录
-1. **EC11 ISR 重构**：移除 ISR 内回调，改为队列事件。修复了 `Interrupt wdt timeout` panic。
-2. **EC11 限位**：0°/180° 限位阻断，EC11 反方向旋转才能解除。
-3. **RGB 响应**：移除 `rgb_step_towards` 渐变，EC11 转动时颜色直接跳变。
-4. **颜色映射修复**：90° 原来错误算出绿色，现在正确为蓝色 `(0,0,255)`。
-5. **EC11 步进**：从 5° 改为 2° 每格。
-6. **LCD 驱动**：`MAPPING=0`（标准映射），`lcd_strobe_en` 策略已还原原始方式。
-7. **flash.sh**：添加了 `XTENSA_TOOLCHAIN` PATH 修复 cmake 工具链路径问题。
-8. **网络层**：`main/net/` 目录下代码完整保留，但 **当前未编译**（固件为本地模式）。
-9. **LCD 驱动**：`MAPPING=1`（反向映射），部分廉价 PCF8574 背板需要反向映射才能正确显示文字。
+1. **v0.6 广播-订阅架构**：彻底解决 SPI 阻塞导致的 2-3 秒延迟。ec11_reader 最高优先级，舵机/RGB/GC9A01/LCD 独立消费任务。
+2. **LVGL timer 修复**：`lv_timer_create` 改用 FreeRTOS 任务 + `lv_refr_now()` 强制刷新。
+3. **SPI CPU 让步**：每传输 20 行 `vTaskDelay(1)`，防止 SPI 传输期间饿死其他任务。
+4. **EC11 ISR 重构**：移除 ISR 内回调，改为队列事件。修复了 `Interrupt wdt timeout` panic。
+5. **EC11 限位**：0°/180° 限位阻断，EC11 反方向旋转才能解除。
+6. **RGB 响应**：移除 `rgb_step_towards` 渐变，EC11 转动时颜色直接跳变。
+7. **颜色映射修复**：90° 原来错误算出绿色，现在正确为蓝色 `(0,0,255)`。
+8. **EC11 步进**：从 5° 改为 2° 每格。
+9. **flash.sh**：添加了 `XTENSA_TOOLCHAIN` PATH 修复 cmake 工具链路径问题。
 
 ---
 
@@ -194,6 +204,7 @@ cd /home/byd/Desktop/espattack
 - `hal/` 目录下的代码**只依赖 ESP-IDF 底层 API**，不引用 `main.c` 或网络层变量。
 - **禁止在 ISR 内调用任何可能阻塞的 API**（信号量、队列发送阻塞、malloc 等）。
 - 新增传感器/执行器时，按 `hal_xxx.h / hal_xxx.c` 的命名规范新建文件，`main/CMakeLists.txt` 会自动递归收集 `.c` 文件。
+- SPI 传输中每 20 行必须调用 `vTaskDelay(1)` 让出 CPU，防止阻塞 scheduler。
 
 ### LCD1602 调试提示
 - 如果屏幕出现满屏灰色块，通常是 **PCF8574 引脚映射** 问题。当前 `MAPPING=1`（反向映射）：
@@ -202,6 +213,12 @@ cd /home/byd/Desktop/espattack
   ```
 - 如果屏幕只有背光没有字，**先旋转背板上的蓝色电位器调对比度**，再查软件。
 - 出现 `ESP_ERR_INVALID_RESPONSE` 时，代码已内置一次重试，若仍频繁报错需检查杜邦线接触或上拉电阻。
+
+### GC9A01 调试提示
+- 初始化使用 Bodmer TFT_eSPI 序列，**命令和数据必须分开 transaction**，不可合并。
+- MADCTL=0x08 设置 MX=1, MY=1, BGR=1（竖屏模式）。
+- RGB565 字节序为 BGR（不是 RGB），颜色值需字节交换后再发送。
+- 每次 SPI 传输必须让 CPU 每 20 行 `vTaskDelay(1)`。
 
 ### 重新启用网络层
 如需恢复 WiFi + MQTT：
@@ -213,8 +230,8 @@ cd /home/byd/Desktop/espattack
 
 ## 8. 快速联系人机接口
 
-- **用户当前关注点**：LCD1602 显示白色方块（待解决）、EC11+RGB 响应是否顺畅。
-- **已知未解决**：LCD1602 显示问题（MAPPING 已切换为 1，请验证是否正常显示）。
+- **用户当前关注点**：系统响应延迟已解决（v0.6），所有模块正常工作。
+- **已知问题**：无重大未解决问题。
 
 *文档维护者：AI Agent + 人类开发者*  
-*最后一次更新：2026-04-15*
+*最后一次更新：2026-04-16*
