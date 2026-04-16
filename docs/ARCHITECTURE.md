@@ -56,32 +56,41 @@
 ```
 /home/byd/Desktop/espattack/          # 项目根目录
 ├── CMakeLists.txt                    # ESP-IDF 顶层 CMake
+├── sdkconfig                         # ESP-IDF 芯片配置
+├── flash.sh                         # 编译烧录脚本（含 gen_config.py 调用）
+├── gen_config.py                    # 配置生成器：control/*.json → main/app_config.h
+├── control/                         # 用户可编辑配置（JSON）
+│   ├── servo.json     # 舵机角度映射
+│   ├── rgb.json       # 颜色关键帧
+│   ├── display.json   # LCD 显示模式/文字
+│   └── encoder.json   # 编码器步进/初始角度
 ├── components/
-│   └── esp-mqtt/                     # 外部组件：乐鑫官方 MQTT 客户端库
-│       ├── CMakeLists.txt
-│       ├── include/mqtt_client.h
-│       └── ...
+│   └── esp-mqtt/                     # 外部组件：乐鑫官方 MQTT 客户端库（当前未编译）
 ├── docs/
+│   ├── AGENTS.md                   # AI Agent 快速介入文档
 │   ├── PROJECT_LOG.md                # 过程日志（按时间线记录）
 │   ├── ARCHITECTURE.md               # 本文件：架构与接口规范
-│   └── TUTORIAL.md                   # 初学者教学文档（概念解释）
+│   └── TUTORIAL.md                   # 初学者教学文档
 └── main/                             # 主组件（ESP-IDF 应用入口）
-    ├── CMakeLists.txt                # main 组件的 CMake，自动递归收集 .c
-    ├── main.c                        # 顶层应用逻辑（初始化 + 主循环 + MQTT 任务）
+    ├── CMakeLists.txt                # 自动收集 hal/*.c 和 main.c
+    ├── app_config.h                 # 自动生成（gen_config.py 产出，勿手动修改）
+    ├── main.c                        # 顶层应用逻辑（初始化 + 主循环 + ec11_task）
     ├── hal/                          # 硬件抽象层 (Hardware Abstraction Layer)
     │   ├── hal_common.h              # 通用类型定义（颜色、错误码）
     │   ├── hal_servo.h / .c          # SG90 舵机驱动
     │   ├── hal_rgb.h   / .c          # WS2812 RGB LED 驱动
-    │   └── hal_ec11.h  / .c          # EC11 旋转编码器驱动
-    └── net/                          # 网络通信层 (Network Abstraction Layer)
-        ├── net_wifi.h / .c           # WiFi Station 模式初始化与连接管理
-        └── net_mqtt.h / .c           # MQTT 客户端封装（发布/订阅/JSON解析）
+    │   ├── hal_ec11.h  / .c          # EC11 旋转编码器驱动
+    │   └── hal_lcd1602.h / .c        # LCD1602 I2C 驱动
+    └── net/                          # 网络通信层（代码完整，当前未编译）
+        ├── net_wifi.h / .c           # WiFi Station 模式
+        └── net_mqtt.h / .c           # MQTT 客户端
 ```
 
 > **设计原则**：
 > - `hal/` 内的代码**不依赖任何应用层或网络层逻辑**，只封装底层寄存器/外设操作。
 > - `net/` 内的代码**不依赖任何 HAL 细节**，只负责网络连接与协议数据收发。
-> - `main.c` 作为**胶水层**，将 `hal` 和 `net` 连接起来，实现"本地旋转编码器 → 舵机 + RGB" 和 "远程 MQTT 指令 → 舵机 + RGB" 两条控制路径。
+> - `main.c` 作为**胶水层**，将 `hal` 和 `net` 连接起来。
+> - **配置系统**：所有应用参数通过 `control/*.json` 配置，`gen_config.py` 生成 `app_config.h`，代码无需改动即可更改行为。
 
 ---
 
@@ -321,7 +330,9 @@ hal_err_t net_mqtt_publish_heartbeat(void);
 EC11 旋转 → ec11_isr_handler（5ms 消抖）
           → xQueueSendFromISR(s_event_queue, &ev)
           → ec11_task: xQueueReceive（阻塞等待）
-                   → hal_servo_set_angle(angle)
+                   → CFG_EC11_TO_SERVO(angle) 计算舵机角度
+                   → hal_servo_set_angle(servo_angle)
+                   → color_from_angle(servo_angle, &r, &g, &b)  // 使用 s_rgb_keyframes 插值
                    → hal_rgb_set_color(r, g, b)
                    → ESP_LOGI(...)
 ```
@@ -331,7 +342,7 @@ EC11 旋转 → ec11_isr_handler（5ms 消抖）
 
 ### 6.4 颜色策略（应用层决策）
 
-`color_from_angle()` 在 `main.c` 中实现，**不属于 HAL 职责**：
+`color_from_angle()` 在 `main.c` 中实现，使用 `app_config.h` 中的 `s_rgb_keyframes[]` 数组进行线性插值，**不属于 HAL 职责**：
 
 | 角度 | 颜色 | RGB 值 |
 |------|------|--------|
@@ -446,8 +457,9 @@ hal_err_t hal_motor_set_speed(int left, int right);  // -100 ~ 100
 | 2026-04-13 | v0.1 | 完成 HAL 层重构（SG90 + WS2812 + EC11），编译验证通过。 |
 | 2026-04-13 | v0.2 | 完成 Phase 1：接入 WiFi + MQTT，增加 `net_wifi` 和 `net_mqtt` 模块，编译验证通过。 |
 | 2026-04-15 | v0.3 | EC11 ISR 重构为队列模式（修复 `Interrupt wdt timeout`）；颜色映射 90° 修复；移除 RGB 渐变；EC11 步进 5°→2°；LCD1602 引脚改 GPIO8/9；flash.sh toolchain PATH 修复。 |
+| 2026-04-16 | v0.4 | JSON 配置层（control/ + gen_config.py）；LCD MAPPING=1（反向映射）；舵机角度映射（EC11→Servo 可配置）；4 种固定 LCD 显示模式。 |
 
 ---
 
 *文档维护者：AI Agent + 人类开发者协同*  
-*最后一次更新：2026-04-15*
+*最后一次更新：2026-04-16*

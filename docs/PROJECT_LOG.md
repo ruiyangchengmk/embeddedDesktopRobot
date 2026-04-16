@@ -218,34 +218,45 @@ INIT → WIFI_CONNECTING → MQTT_CONNECTING → RUNNING → (DISCONNECTED → R
 ```
 /home/byd/Desktop/espattack/
 ├── CMakeLists.txt              # 顶层 CMake
+├── sdkconfig                   # ESP-IDF 芯片配置
+├── flash.sh                    # 编译烧录脚本（内含 gen_config.py 调用）
+├── gen_config.py               # 配置生成器：control/*.json → main/app_config.h
+├── control/                    # 用户可编辑的配置（JSON）
+│   ├── servo.json     # 舵机角度映射
+│   ├── rgb.json       # 颜色 keyframe
+│   ├── display.json   # LCD 显示模式和文字
+│   └── encoder.json   # 编码器步进/初始角度
 ├── components/
-│   └── esp-mqtt/               # 从 GitHub 拉取的官方 MQTT 客户端库
+│   └── esp-mqtt/               # 官方 MQTT 客户端库（当前未编译）
 ├── docs/
-│   ├── PROJECT_LOG.md          # 本文件
-│   ├── ARCHITECTURE.md         # 详细架构/接口/API文档
-│   └── TUTORIAL.md             # 初学者教学文档
+│   ├── AGENTS.md              # AI Agent 快速介入文档
+│   ├── ARCHITECTURE.md        # 详细架构/接口/API文档
+│   ├── PROJECT_LOG.md         # 本文件
+│   └── TUTORIAL.md            # 初学者教学文档
 └── main/                       # 主组件
-    ├── CMakeLists.txt          # 自动递归收集所有 .c 文件
-    ├── main.c                  # 应用顶层：初始化 + 主循环 + MQTT 任务
+    ├── CMakeLists.txt          # 自动收集 hal/*.c 和 main.c
+    ├── app_config.h           # 自动生成（由 gen_config.py 产出，勿手动修改）
+    ├── main.c                  # 应用层：ec11_task + LCD 刷新主循环
     ├── hal/                    # 硬件抽象层
     │   ├── hal_common.h
     │   ├── hal_servo.h / .c
     │   ├── hal_rgb.h   / .c
-    │   └── hal_ec11.h  / .c
-    └── net/                    # 网络通信层
+    │   ├── hal_ec11.h  / .c
+    │   └── hal_lcd1602.h / .c
+    └── net/                    # 网络通信层（代码完整保留，当前未编译）
         ├── net_wifi.h / .c
         └── net_mqtt.h / .c
 ```
 
 ### 4.2 代码状态
 
-- **HAL 层**：✅ 已完成并编译验证通过。四个模块（`hal_servo`, `hal_rgb`, `hal_ec11`, `hal_lcd1602`）接口干净，不依赖任何应用层逻辑。
-- **NET 层**：✅ 代码已完成（保留在 `main/net/` 中），但**当前未启用**。固件以**纯本地模式**运行。
-- **应用层**：`main.c` 当前包含 `ec11_task`（队列接收 → 更新舵机+RGB）和主循环（LCD 刷新）。WiFi/MQTT 相关代码已移除。
-- **颜色策略**：`0°绿 → 90°蓝 → 180°红` 的映射在 `main.c` 中直接计算，**无渐变**（每转直接跳变）。
-- **当前依赖组件**：`driver`, `esp_driver_rmt`, `esp_driver_ledc`, `esp_driver_gpio`, `esp_timer`。
-- **EC11 消抖**：5ms 软件消抖。**重要变更**：ISR 通过 FreeRTOS 队列传递事件，不在 ISR 内调用阻塞 API。
-- **LCD1602**：I2C 地址 0x27，GPIO8/9，5kHz，MAPPING=0。当前显示白色方块（问题未解决）。
+- **HAL 层**：✅ 已完成。四个模块（`hal_servo`, `hal_rgb`, `hal_ec11`, `hal_lcd1602`）接口干净，不依赖应用层或网络层。
+- **NET 层**：代码完整保留在 `main/net/`，**当前未编译**，固件为纯本地模式。
+- **配置系统**（新增 v0.4）：所有应用参数通过 `control/*.json` 配置，`.flash.sh` 运行时自动调用 `gen_config.py` 生成 `main/app_config.h`。无需修改代码即可改舵机映射、LCD 文字、颜色关键帧等。
+- **应用层**：`main.c` 引用 `app_config.h` 中的 `CFG_*` 宏，`ec11_task` 通过队列接收事件，更新舵机+RGB。
+- **当前依赖组件**：`driver`, `esp_driver_rmt`, `esp_driver_ledc`, `esp_driver_gpio`, `esp_driver_i2c`, `esp_timer`。
+- **EC11 ISR 架构**：ISR 只做消抖+队列发送，所有实际控制操作在 `ec11_task`（优先级10）中完成。
+- **LCD1602**：I2C 地址 0x27，GPIO8/9，5kHz，**MAPPING=1**（反向映射）。
 
 ### 4.3 编译验证记录
 
@@ -268,7 +279,7 @@ INIT → WIFI_CONNECTING → MQTT_CONNECTING → RUNNING → (DISCONNECTED → R
   1. 从 `main/CMakeLists.txt` 中移除了网络组件依赖，排除 `main/net/*.c` 出编译列表，固件恢复为轻量本地模式。
   2. 在 `hal_ec11.c` 中加入 **5ms 软件消抖**，解决机械编码器触点抖动导致的角度跳变和方向误判。
 
-#### 第四次（EC11 ISR 重构，LCD1602 修复）
+#### 第四次（EC11 ISR 重构，LCD1602 初步接入）
 - **时间**：2026-04-15
 - **结果**：✅ 编译成功，`blink.bin` 大小 `0x37b40` bytes (约 226 KB)。
 - **变更说明**：
@@ -277,8 +288,18 @@ INIT → WIFI_CONNECTING → MQTT_CONNECTING → RUNNING → (DISCONNECTED → R
   3. **颜色映射修复**：90° 原来算出绿色（错），现为蓝色 `(0,0,255)`。
   4. **EC11 步进**：从 5° 改为 2° 每格。
   5. **EC11 限位**：0°/180° 阻断，需反向旋转解除。
-  6. **LCD1602**：GPIO8/9，0x27，5kHz，MAPPING=0，仍白色方块待解决。
+  6. **LCD1602**：GPIO8/9，0x27，5kHz，MAPPING=0，显示白色方块。
   7. **flash.sh**：添加 `XTENSA_TOOLCHAIN` PATH 修复 cmake 找不到编译器。
+
+#### 第五次（配置层重构 + LCD MAPPING=1）
+- **时间**：2026-04-16
+- **结果**：✅ 编译成功，`blink.bin` 大小 `0x37bc0` bytes (约 226 KB)。
+- **变更说明**：
+  1. **JSON 配置层**：新增 `control/` 目录（servo.json, rgb.json, display.json, encoder.json）和 `gen_config.py`，实现配置与代码分离。
+  2. **gen_config.py**：读取 `control/*.json` 生成 `main/app_config.h`，包含所有 `CFG_*` 宏和 RGB keyframe 数组。
+  3. **flash.sh**：加入 `gen_config.py` 预调用，每次编译自动重新生成配置头文件。
+  4. **main.c 重构**：移除硬编码常量，引用 `app_config.h` 的 `CFG_*` 宏，通过 `CFG_EC11_TO_SERVO()` 做角度映射。
+  5. **LCD1602**：MAPPING=0→1（反向映射），白色方块问题解决，LCD 正常显示开机文字。
 
 ### 4.4 如何重新开启 WiFi + MQTT
 
@@ -340,4 +361,4 @@ idf_component_register(SRCS ${SOURCES}
 
 ---
 
-*文档更新时间：2026-04-15*
+*文档更新时间：2026-04-16*
