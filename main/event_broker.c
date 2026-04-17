@@ -56,9 +56,17 @@ static void broadcast_event(broker_event_t *ev)
     for (int i = 0; i < s_subscriber_count; i++) {
         if (s_subscribers[i].type == ev->type || s_subscribers[i].type == EVENT_TYPE_ALL) {
             BaseType_t sent = xQueueSend(s_subscribers[i].queue, ev, 0);
-            if (sent != pdTRUE) {
-                // 队列满，丢弃（non-blocking）
-            }
+            (void)sent;
+        }
+    }
+}
+
+static void broadcast_event_from_isr(broker_event_t *ev, BaseType_t *woken)
+{
+    for (int i = 0; i < s_subscriber_count; i++) {
+        if (s_subscribers[i].type == ev->type || s_subscribers[i].type == EVENT_TYPE_ALL) {
+            BaseType_t sent = xQueueSendFromISR(s_subscribers[i].queue, ev, woken);
+            (void)sent;
         }
     }
 }
@@ -130,7 +138,6 @@ QueueHandle_t event_broker_get_queue(void)
 
 hal_err_t event_broker_broadcast(event_type_t type, int32_t value)
 {
-    // broadcast 不做节流（立即发布）
     if (!s_initialized) return HAL_ERR_NOT_INIT;
 
     broker_event_t ev = {
@@ -139,6 +146,10 @@ hal_err_t event_broker_broadcast(event_type_t type, int32_t value)
         .timestamp_us = esp_timer_get_time(),
     };
 
-    broadcast_event(&ev);
+    BaseType_t woken = pdFALSE;
+    broadcast_event_from_isr(&ev, &woken);
+    if (woken == pdTRUE) {
+        portYIELD_FROM_ISR();
+    }
     return HAL_OK;
 }
