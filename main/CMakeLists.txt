@@ -4,7 +4,7 @@
 # 注意：gen_config.py 由 flash.sh 在编译前调用，生成 main/app_config.h
 # app_config.h 由 main.c include，无需在此 CMakeLists 中处理
 
-file(GLOB SOURCES "hal/*.c" "main.c")
+file(GLOB SOURCES "hal/*.c" "main.c" "event_broker.c")
 
 idf_component_register(SRCS ${SOURCES}
                        INCLUDE_DIRS "." "${CMAKE_CURRENT_BINARY_DIR}"
