@@ -17,10 +17,10 @@
 #include "event_broker.h"
 #include "app_config.h"
 
-#define EC11_CLK_GPIO        6
-#define EC11_DT_GPIO         7
-#define EC11_SW_GPIO         8
-#define EC11_POLL_MS         5
+#define EC11_CLK_GPIO        5
+#define EC11_DT_GPIO         6
+#define EC11_SW_GPIO         7
+#define EC11_POLL_MS         10
 #define EC11_SW_DEBOUNCE_US 200000
 
 static const char *TAG = "HAL_EC11";
@@ -122,13 +122,13 @@ hal_err_t hal_ec11_init(void)
     s_last_sw_time = 0;
     s_initialized = true;
 
-    // 启动轮询任务（优先级 20，最高）
+    // 启动轮询任务
     BaseType_t ok = xTaskCreatePinnedToCore(
         ec11_reader_task,
         "ec11_reader",
         2048,
         NULL,
-        20,
+        12,
         &s_reader_task_handle,
         0
     );

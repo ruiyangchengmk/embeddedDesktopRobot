@@ -1,6 +1,6 @@
 {
   "comment": "EC11 编码器配置。step_size: 每格旋转的角度步进值（度）。",
-  "step_size": 10,
+  "step_size": 2,
   "initial_angle": 90,
   "reset_angle": 90
 }

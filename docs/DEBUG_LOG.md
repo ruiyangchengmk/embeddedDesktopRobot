@@ -262,4 +262,101 @@ rmt_transmit(encoder, &tx_channel, colors, size, &transmit_config);
 
 ---
 
-*最后更新：2026-04-16*
+## 9. LVGL 9 方块不旋转（`lv_tick_inc` 缺失）
+
+**问题描述**：GC9A01 上能看到方块，但旋转 EC11 时方块永远停在初始位置。
+
+### 根因分析
+
+LVGL 9 的 `lv_timer_handler()` 内部依赖 `lv_tick_get()` 来判断 timer 是否到期。
+默认实现中，`lv_tick_get()` 返回的值只能通过 `lv_tick_inc()` 递增：
+
+```c
+uint32_t lv_tick_get(void)
+{
+    if(state_p->tick_get_cb)
+        return state_p->tick_get_cb();
+    // 否则读取 sys_time，该值仅由 lv_tick_inc() 更新
+}
+```
+
+项目中没有任何代码调用 `lv_tick_inc()`，导致：
+1. `lv_tick_get()` 永远返回初始值（≈0）
+2. `lv_timer_handler()` 第一次调用时会执行初始渲染（画出方块）
+3. 后续调用时，因为 tick 没有增长，LVGL 认为没有任何 timer 到期，直接返回，不做任何重绘
+4. 因此 `lv_obj_set_style_transform_rotation()` 虽然修改了样式，但永远不会被渲染到屏幕上
+
+### 参考验证
+
+参考项目 [UsefulElectronics/esp32s3-gc9a01-lvgl](https://github.com/UsefulElectronics/esp32s3-gc9a01-lvgl) 使用 `esp_timer` 每 2ms 调用 `lv_tick_inc(EXAMPLE_LVGL_TICK_PERIOD_MS)`，这是 LVGL 的标准心跳机制。
+
+### 修复方案
+
+在 `lvgl_task` 的 while 循环中，每次调用 `lv_timer_handler()` 前手动推进 tick：
+
+```c
+while (1) {
+    lv_tick_inc(10);        // 告诉 LVGL 过去了 10ms
+    lv_timer_handler();     // 现在 timer 会正常推进
+    vTaskDelay(pdMS_TO_TICKS(10));
+}
+```
+
+---
+
+## 10. GC9A01 颜色偏差（紫色而非蓝色）
+
+**问题描述**：`lv_color_make(0, 0, 255)` 设置蓝色，但方块显示为紫色/洋红色。
+
+### 根因分析
+
+这是一个 **三层字节序错位** 问题：
+
+1. **LVGL 9 内部颜色格式**：`lv_color_t` 在 `LV_COLOR_FORMAT_RGB565` 下渲染为 16bit 像素值
+2. **ESP32-S3 小端存储**：16bit 值 `0x001F`（蓝色 RGB565）在内存中存储为 `[0x1F, 0x00]`（低字节在前）
+3. **GC9A01 SPI 接收顺序**：面板把 SPI 总线上先收到的字节当作**高字节**（MSB first），因此实际接收到的值是 `0x1F00`
+
+`0x1F00` 在 RGB565 中 = R=3, G=56, B=0（黄绿色），但由于之前 MADCTL 设为 BGR 模式，加上测试时的各种 workaround，最终呈现为紫色/洋红色。
+
+### 正确修复（而非 workaround）
+
+参考 ESP-IDF 官方 `esp_lcd` 驱动做法：在 flush 回调中对 RGB565 buffer 做字节交换。
+
+LVGL 9 提供了专门的 API：`lv_draw_sw_rgb565_swap(buf, buf_size_px)`
+
+```c
+static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
+{
+    // ESP32 小端 -> GC9A01 需要大端字节序
+    lv_draw_sw_rgb565_swap(px_map, lv_area_get_size(area));
+
+    hal_gc9a01_draw_bitmap(area->x1, area->y1, area->x2 + 1, area->y2 + 1, px_map);
+    lv_display_flush_ready(disp);
+}
+```
+
+同时把 MADCTL 从 `0x08`（BGR）改回 `0x00`（RGB），这样：
+- `0xF800` = 红色
+- `0x07E0` = 绿色
+- `0x001F` = 蓝色
+- `lv_color_make(0, 0, 255)` = 蓝色（正确）
+
+### 错误做法
+
+在 SPI 测试阶段通过交换颜色常量值来做 workaround（例如把 RED 常量填 `0x001F`），这只是掩盖了字节序问题。当 LVGL 接管显示后，其内部生成的 RGB565 数据仍然会以错误的字节序发送，导致颜色偏差。
+
+---
+
+## 调试工具清单
+
+| 工具 | 用途 |
+|------|------|
+| `idf.py monitor` | 串口日志输出 |
+| `esptool.py` | 烧录固件 |
+| `xtensa-esp32s3-elf-gdb` | 调试崩溃日志 |
+| `spi_master_polling_test` | SPI 裸机测试 |
+| `gpio_get_level()` | 直接读取 GPIO 状态 |
+
+---
+
+*最后更新：2026-04-17*

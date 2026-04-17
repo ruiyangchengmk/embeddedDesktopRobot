@@ -48,48 +48,52 @@ static void cmd_data(uint8_t c, const uint8_t *d, size_t len)
 
 hal_err_t hal_gc9a01_init(void)
 {
-    if (s_spi) { ESP_LOGW(TAG, "Already initialized"); return HAL_OK; }
+    bool first_init = false;
+    if (!s_spi) {
+        first_init = true;
+        ESP_LOGI(TAG, "Init starting...");
 
-    ESP_LOGI(TAG, "Init starting...");
+        gpio_set_direction(GC9A01_DCX_GPIO, GPIO_MODE_OUTPUT);
+        gpio_set_direction(GC9A01_RESX_GPIO, GPIO_MODE_OUTPUT);
+        gpio_set_direction(GC9A01_CS_GPIO, GPIO_MODE_OUTPUT);
+        DC_HIGH();
+        gpio_set_level(GC9A01_RESX_GPIO, 1);
 
-    gpio_set_direction(GC9A01_DCX_GPIO, GPIO_MODE_OUTPUT);
-    gpio_set_direction(GC9A01_RESX_GPIO, GPIO_MODE_OUTPUT);
-    gpio_set_direction(GC9A01_CS_GPIO, GPIO_MODE_OUTPUT);
-    DC_HIGH();
-    gpio_set_level(GC9A01_RESX_GPIO, 1);
+        spi_bus_config_t buscfg = {
+            .mosi_io_num = GC9A01_SDA_GPIO,
+            .miso_io_num = -1,
+            .sclk_io_num = GC9A01_SCL_GPIO,
+            .quadwp_io_num = -1,
+            .quadhd_io_num = -1,
+            .max_transfer_sz = 4096,
+        };
 
-    spi_bus_config_t buscfg = {
-        .mosi_io_num = GC9A01_SDA_GPIO,
-        .miso_io_num = -1,
-        .sclk_io_num = GC9A01_SCL_GPIO,
-        .quadwp_io_num = -1,
-        .quadhd_io_num = -1,
-        .max_transfer_sz = 4096,
-    };
+        spi_device_interface_config_t devcfg = {
+            .clock_speed_hz = 40 * 1000 * 1000,  // 40MHz
+            .mode = 0,
+            .spics_io_num = GC9A01_CS_GPIO,
+            .queue_size = 250,
+            .flags = SPI_DEVICE_HALFDUPLEX,
+        };
 
-    spi_device_interface_config_t devcfg = {
-        .clock_speed_hz = 40 * 1000 * 1000,  // 40MHz
-        .mode = 0,
-        .spics_io_num = GC9A01_CS_GPIO,
-        .queue_size = 250,   // 足够 cover 所有事务
-        .flags = SPI_DEVICE_HALFDUPLEX,
-    };
+        esp_err_t err = spi_bus_initialize(GC9A01_SPI_HOST, &buscfg, SPI_DMA_CH_AUTO);
+        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+            ESP_LOGE(TAG, "spi_bus_initialize: %d", err);
+            return HAL_ERR;
+        }
+        ESP_LOGI(TAG, "Bus initialized");
 
-    esp_err_t err = spi_bus_initialize(GC9A01_SPI_HOST, &buscfg, SPI_DMA_CH_AUTO);
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        ESP_LOGE(TAG, "spi_bus_initialize: %d", err);
-        return HAL_ERR;
+        err = spi_bus_add_device(GC9A01_SPI_HOST, &devcfg, &s_spi);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "spi_bus_add_device: %d", err);
+            return HAL_ERR;
+        }
+        ESP_LOGI(TAG, "SPI device added");
+    } else {
+        ESP_LOGW(TAG, "Already initialized, resetting panel...");
     }
-    ESP_LOGI(TAG, "Bus initialized");
 
-    err = spi_bus_add_device(GC9A01_SPI_HOST, &devcfg, &s_spi);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "spi_bus_add_device: %d", err);
-        return HAL_ERR;
-    }
-    ESP_LOGI(TAG, "SPI device added");
-
-    // Hardware reset
+    // Hardware reset (always, to ensure clean state for LVGL)
     ESP_LOGI(TAG, "RESX pulse...");
     gpio_set_level(GC9A01_RESX_GPIO, 0);
     vTaskDelay(pdMS_TO_TICKS(20));
@@ -98,13 +102,11 @@ hal_err_t hal_gc9a01_init(void)
     ESP_LOGI(TAG, "RESX done");
 
     // === Bodmer TFT_eSPI GC9A01 init (verbatim) ===
-    // 0xEF alone × 1, then 0xEB + data × 3
     cmd(0xEF);
     cmd(0xEB); cmd_data(0xEB, (uint8_t[]){0x14}, 1);
     cmd(0xEB); cmd_data(0xEB, (uint8_t[]){0x14}, 1);
     cmd(0xEB); cmd_data(0xEB, (uint8_t[]){0x14}, 1);
 
-    // Enter register bank, then 0xEF alone × 1, then 0xEB + data × 3
     cmd(0xFE);
     cmd(0xEF);
     cmd(0xEB); cmd_data(0xEB, (uint8_t[]){0x14}, 1);
@@ -153,12 +155,21 @@ hal_err_t hal_gc9a01_init(void)
     cmd(0x98); cmd_data(0x98, (uint8_t[]){0x3E, 0x07}, 2);
 
     // === Display ON sequence ===
-    cmd(0x35);  // TE ON (walldsync)
-    cmd_data(0x36, (uint8_t[]){0x08}, 1);  // MADCTL: MX=1 MY=1 BGR (portrait)
+    cmd(0x35);  // TE ON
+    cmd_data(0x36, (uint8_t[]){0x00}, 1);  // MADCTL: RGB mode, no mirror
     cmd(0x11);  // Sleep out
     vTaskDelay(pdMS_TO_TICKS(120));
     cmd(0x29);  // Display ON
     vTaskDelay(pdMS_TO_TICKS(20));
+
+    // Clear screen to black
+    size_t buf_size = (size_t)GC9A01_WIDTH * GC9A01_HEIGHT * sizeof(uint16_t);
+    uint16_t *black_buf = heap_caps_calloc(1, buf_size, MALLOC_CAP_DMA);
+    if (black_buf) {
+        hal_gc9a01_draw_bitmap(0, 0, GC9A01_WIDTH, GC9A01_HEIGHT, black_buf);
+        heap_caps_free(black_buf);
+        ESP_LOGI(TAG, "Screen cleared to black");
+    }
 
     ESP_LOGI(TAG, "Init complete");
     return HAL_OK;
@@ -222,7 +233,7 @@ hal_err_t hal_gc9a01_spi_test(void)
     uint16_t *buf = malloc(GC9A01_WIDTH * GC9A01_HEIGHT * sizeof(uint16_t));
     if (!buf) return HAL_ERR_NO_MEM;
 
-    for (int i = 0; i < GC9A01_WIDTH * GC9A01_HEIGHT; i++) buf[i] = 0x001F;
+    for (int i = 0; i < GC9A01_WIDTH * GC9A01_HEIGHT; i++) buf[i] = 0xF800;
     hal_gc9a01_draw_bitmap(0, 0, GC9A01_WIDTH, GC9A01_HEIGHT, buf);
     ESP_LOGI(TAG, "Full screen RED");
     vTaskDelay(pdMS_TO_TICKS(2000));
@@ -232,7 +243,7 @@ hal_err_t hal_gc9a01_spi_test(void)
     ESP_LOGI(TAG, "Full screen GREEN");
     vTaskDelay(pdMS_TO_TICKS(2000));
 
-    for (int i = 0; i < GC9A01_WIDTH * GC9A01_HEIGHT; i++) buf[i] = 0xF800;
+    for (int i = 0; i < GC9A01_WIDTH * GC9A01_HEIGHT; i++) buf[i] = 0x001F;
     hal_gc9a01_draw_bitmap(0, 0, GC9A01_WIDTH, GC9A01_HEIGHT, buf);
     ESP_LOGI(TAG, "Full screen BLUE");
     vTaskDelay(pdMS_TO_TICKS(2000));

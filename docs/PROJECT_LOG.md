@@ -10,6 +10,7 @@
 | v0.4 | 2026-04-15 | 添加配置层 `control/*.json` + `gen_config.py` |
 | v0.5 | 2026-04-16 | 修复 LVGL timer 不触发问题（改用 `lv_refr_now`） |
 | v0.6 | 2026-04-16 | 广播-订阅架构重构，解决 SPI 阻塞导致的 2-3s 延迟 |
+| v0.7 | 2026-04-17 | 事件总线 + 私有队列；修复 EC11 GPIO 和 CPU 饿死；GC9A01 硬复位清屏修复 |
 
 ---
 
@@ -264,13 +265,14 @@ INIT → WIFI_CONNECTING → MQTT_CONNECTING → RUNNING → (DISCONNECTED → R
 
 ### 4.2 代码状态
 
-- **HAL 层**：✅ 已完成。四个模块（`hal_servo`, `hal_rgb`, `hal_ec11`, `hal_lcd1602`）接口干净，不依赖应用层或网络层。
+- **HAL 层**：✅ 已完成。五个模块（`hal_servo`, `hal_rgb`, `hal_ec11`, `hal_lcd1602`, `hal_gc9a01`）接口干净，不依赖应用层或网络层。
 - **NET 层**：代码完整保留在 `main/net/`，**当前未编译**，固件为纯本地模式。
-- **配置系统**（新增 v0.4）：所有应用参数通过 `control/*.json` 配置，`.flash.sh` 运行时自动调用 `gen_config.py` 生成 `main/app_config.h`。无需修改代码即可改舵机映射、LCD 文字、颜色关键帧等。
-- **应用层**：`main.c` 引用 `app_config.h` 中的 `CFG_*` 宏，`ec11_task` 通过队列接收事件，更新舵机+RGB。
-- **当前依赖组件**：`driver`, `esp_driver_rmt`, `esp_driver_ledc`, `esp_driver_gpio`, `esp_driver_i2c`, `esp_timer`。
-- **EC11 ISR 架构**：ISR 只做消抖+队列发送，所有实际控制操作在 `ec11_task`（优先级10）中完成。
+- **配置系统**：所有应用参数通过 `control/*.json` 配置，`.flash.sh` 运行时自动调用 `gen_config.py` 生成 `main/app_config.h`。
+- **应用层**：`main.c` 基于 `event_broker` 广播-订阅模型。`consumer_task` 将事件转换为 `angle_msg_t` 后广播到 4 个私有队列，各消费者独立运行。
+- **当前依赖组件**：`driver`, `esp_driver_rmt`, `esp_driver_ledc`, `esp_driver_gpio`, `esp_driver_i2c`, `esp_driver_spi`, `esp_timer`, `lvgl`。
+- **EC11 架构**：轮询任务（10ms）替代 ISR 旋转检测，按键仍使用 ISR。彻底解决 ISR 内阻塞 API 导致的 panic 问题。
 - **LCD1602**：I2C 地址 0x27，GPIO8/9，5kHz，**MAPPING=1**（反向映射）。
+- **GC9A01**：直接 SPI 驱动（Bodmer init sequence），40MHz，`hal_gc9a01_init()` 每次调用都会硬复位+清屏，确保 LVGL 接管时状态干净。
 
 ### 4.3 编译验证记录
 
@@ -324,6 +326,20 @@ INIT → WIFI_CONNECTING → MQTT_CONNECTING → RUNNING → (DISCONNECTED → R
   3. **GPIO 测试任务**：gpio_test_task 在 Core 0 以 5Hz 翻转 GPIO1（DC 引脚），用于硬件通路验证。
   4. **build error 修复**：gpio_test_task 原定义在 app_main() 内部（非法），移至文件作用域。
   5. **lvgl_demo_init 未被调用**：GC9A01 和 LVGL 初始化代码已就位，但当前固件中 lvgl_demo_init() 尚未被 app_main() 调用。
+
+#### 第七次（v0.7 事件总线 + 私有队列 + GC9A01 竞态修复）
+- **时间**：2026-04-17
+- **结果**：✅ 编译成功，blink.bin 大小 0x739e0 bytes (约 458 KB)。
+- **变更说明**：
+  1. **事件总线 `event_broker.c/h`**：引入本地轻量级事件总线，支持事件类型订阅和 100Hz 节流。
+  2. **私有队列**：`consumer_task` 将事件广播到 4 个私有队列（`s_servo_queue`、`s_rgb_queue`、`s_lvgl_queue`、`s_lcd_queue`），彻底修复共享队列竞态导致部分消费者收不到消息的问题。
+  3. **EC11 GPIO 修复**：`hal_ec11.c` 中 CLK/DT/SW 从错误的 6/7/8 改回 5/6/7，消除与 LCD1602 SDA（GPIO8）的冲突。
+  4. **EC11 轮询修复**：`EC11_POLL_MS` 从 5 改为 10（避免 `pdMS_TO_TICKS(5)==0`），轮询任务优先级从 20 降为 12，修复 `vTaskDelay(0)` 导致的 CPU 饿死。
+  5. **GC9A01 竞态修复**：`lvgl_task` 的创建从 `app_main` 开头移到 `hal_gc9a01_spi_test()` 之后，避免 SPI 测试和 LVGL flush 同时操作同一 SPI 设备导致命令序列错乱。
+  6. **GC9A01 幂等重置**：`hal_gc9a01_init()` 在 `s_spi` 已存在时也会执行硬复位 + 初始化序列 + 清屏，确保 LVGL 每次接管都是干净画布。
+  7. **LVGL 旋转中心**：方块设置 `transform_pivot_x/y = 40`，绕中心旋转而不是左上角。
+  8. **LVGL tick 修复（方块不动）**：`lvgl_task` 循环中添加 `lv_tick_inc(10)`。参考 [UsefulElectronics/esp32s3-gc9a01-lvgl](https://github.com/UsefulElectronics/esp32s3-gc9a01-lvgl) 项目确认：LVGL 9 必须有人为 tick 源，`lv_timer_handler()` 才能推进内部 timer，否则方块只绘制一次便永远不再刷新。
+  9. **GC9A01 颜色修复（紫色→蓝色）**：`lvgl_flush_cb` 中添加 `lv_draw_sw_rgb565_swap(px_map, lv_area_get_size(area))`；MADCTL 从 `0x08`（BGR）改回 `0x00`（RGB）。根因：ESP32-S3 小端存储使 RGB565 像素低字节在前，但 GC9A01 SPI 接收时把先收到的字节当作高字节，导致红蓝通道错位。
 
 ### 4.4 如何重新开启 WiFi + MQTT
 

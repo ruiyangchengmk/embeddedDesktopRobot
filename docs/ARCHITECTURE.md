@@ -312,9 +312,10 @@ hal_err_t net_mqtt_publish_heartbeat(void);
 
 ### 6.1 职责
 `main.c` 负责：
-1. 初始化 HAL 层（舵机、RGB、EC11、LCD）
-2. 启动 `ec11_task`（优先级 10）处理 EC11 事件，更新舵机和 RGB
-3. 主循环只负责 LCD 刷新（50ms 间隔）
+1. 初始化 `event_broker` 事件总线和各消费者私有队列
+2. 启动 `consumer_task`（优先级 18）接收事件总线消息，广播给各消费者
+3. 启动 `servo_task`、`rgb_task`、`lvgl_task`、`lcd_task` 四个独立消费者
+4. 初始化所有 HAL 层模块
 
 ### 6.2 FreeRTOS 任务划分
 
@@ -322,7 +323,8 @@ hal_err_t net_mqtt_publish_heartbeat(void);
 
 | 任务名 | 优先级 | 周期 | 职责 |
 |--------|--------|------|------|
-| `ec11_reader` | **20** (最高) | 中断驱动 | 只读 EC11 角度，立即广播到队列 |
+| `ec11_reader` | **12** | 10ms 轮询 | 只读 EC11 角度，立即广播到 `event_broker` |
+| `consumer_task` | **18** | 事件驱动 | 订阅事件总线，将 `broker_event_t` 转换为 `angle_msg_t` 并广播到 4 个私有队列 |
 | `servo_task` | 15 | 每 10ms lerp | 消费角度，做舵机平滑插值 |
 | `rgb_task` | 14 | 事件驱动 | 消费角度，立即更新 RGB 颜色 |
 | `lvgl_task` | 5 | 每 10ms + 角度变化 | 消费角度，驱动 GC9A01 方块旋转 |
@@ -330,27 +332,39 @@ hal_err_t net_mqtt_publish_heartbeat(void);
 
 **设计理由：**
 - EC11 读取是最高优先级，任何时候都不能被延迟
+- `consumer_task` 将事件总线消息转换为统一的 `angle_msg_t`，并分别发送到 4 个**私有队列**（`s_servo_queue`、`s_rgb_queue`、`s_lvgl_queue`、`s_lcd_queue`），彻底避免共享队列的竞态
 - 消费者各自独立任务，一个消费者阻塞不影响其他消费者
 - GC9A01 SPI 传输可能耗时数十毫秒，但舵机和 RGB 不受影响
+
+**LVGL 9 关键配置：**
+- `lv_tick_inc(10)` 必须在 `lvgl_task` 的每个循环周期调用，否则 `lv_timer_handler()` 的内部 timer 不会推进，导致屏幕永远不刷新
+- `lvgl_flush_cb` 中必须调用 `lv_draw_sw_rgb565_swap()`，补偿 ESP32-S3 小端存储与 GC9A01 SPI 大端期望之间的字节序差异
 
 ### 6.3 数据流（广播-订阅模式）
 
 ```
-EC11 旋转 → gpio_isr_handler（5ms 消抖）
-          → xQueueSendFromISR(s_event_queue, &ev)
-          → ec11_reader: xQueueReceive（最高优先级，实时获取）
-                   → 计算 servo_target 和 RGB 颜色
-                   → xQueueSend(s_angle_queue, &msg)  // 广播
+EC11 旋转/按键 → hal_ec11.c: ec11_reader_task（10ms 轮询）
+               → event_broker_publish(EVENT_TYPE_ENCODER_ROTATE/CLICK)
+               → consumer_task: xQueueReceive(s_consumer_queue)
+                        → 计算 servo_target 和 RGB 颜色
+                        → 广播到 4 个私有队列：
+                             xQueueSend(s_servo_queue,  &msg, 0)
+                             xQueueSend(s_rgb_queue,    &msg, 0)
+                             xQueueSend(s_lvgl_queue,   &msg, 0)
+                             xQueueSend(s_lcd_queue,     &msg, 0)
 
-广播队列 s_angle_queue 被同时消费：
+私有队列分别消费：
   → servo_task（优先级 15）：lerp 逼近，每 10ms 写一次舵机
   → rgb_task（优先级 14）：直接更新颜色，无延迟
   → lvgl_task（优先级 5）：EC11 角度变化时触发 SPI 刷新
   → lcd_task（优先级 3）：每 100ms 刷新 LCD1602
 ```
 
+> **为什么使用私有队列而不是共享队列？**
+> `xQueueReceive` 是取走语义。如果 4 个任务共享一个队列，高优先级的 `servo_task` 和 `rgb_task` 会抢走绝大多数消息，`lvgl_task` 和 `lcd_task` 几乎拿不到。私有队列确保每个消费者都能收到完整的事件流。
+>
 > **为什么不需要全局锁？**
-> 所有共享数据（s_angle_queue 里的消息）通过队列传递，不存在多任务同时读写同一变量的情况。
+> 所有共享数据通过队列传递，不存在多任务同时读写同一变量的情况。
 
 ### 6.4 颜色策略（应用层决策）
 
@@ -546,8 +560,9 @@ hal_err_t hal_motor_set_speed(int left, int right);  // -100 ~ 100
 | 2026-04-16 | v0.4 | JSON 配置层（control/ + gen_config.py）；LCD MAPPING=1（反向映射）；舵机角度映射（EC11→Servo 可配置）；4 种固定 LCD 显示模式。 |
 | 2026-04-16 | v0.5 | GC9A01 驱动完全重写（Bodmer init sequence 逐条修正）；LVGL 9 方块旋转（`lv_refr_now()` workaround）；舵机增加角度平滑插值消除抖动；EC11 旋转直接控制 GC9A01 方块转动；增加 HAL 硬件隔离原则文档。 |
 | 2026-04-16 | v0.6 | 广播-订阅架构重构：EC11 广播角度队列 → 5 个独立消费者任务（ec11_reader/servo/rgb/lvgl/lcd），彻底消除 SPI 阻塞导致的延迟和输入丢包问题。 |
+| 2026-04-17 | v0.7 | **事件总线 + 私有队列**：引入 `event_broker.c` 做本地事件路由；修复 EC11 GPIO 定义错误（5/6/7）；修复 `vTaskDelay(0)` 导致的 CPU 饿死；`hal_gc9a01_init()` 每次调用都执行硬复位+清屏；LVGL 方块设置旋转中心 pivot；**修复 `lv_tick_inc` 缺失导致方块不旋转**；**修复 RGB565 小端字节序导致颜色偏差**。 |
 
 ---
 
 *文档维护者：AI Agent + 人类开发者协同*  
-*最后一次更新：2026-04-16（v0.5：HAL 隔离原则 + 舵机平滑插值 + EC11 控制方块）*
+*最后一次更新：2026-04-17（v0.7：事件总线 + 私有队列 + GC9A01 状态重置）*

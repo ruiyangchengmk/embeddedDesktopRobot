@@ -7,7 +7,7 @@
 #define APP_CONFIG_H
 
 /* ---- Encoder ---- */
-#define CFG_ENCODER_STEP_SIZE   10
+#define CFG_ENCODER_STEP_SIZE   2
 #define CFG_ENCODER_INITIAL    90
 #define CFG_ENCODER_RESET      90
 
@@ -16,10 +16,10 @@
 /* EC11->Servo: servo = servo_min + (ec11 - ec11_min) * (servo_max - servo_min) / (ec11_max - ec11_min) */
 #define CFG_SERVO_SMIN          0
 #define CFG_SERVO_SMAX          180
-#define CFG_SERVO_EMIN          0
-#define CFG_SERVO_EMAX          180
+#define CFG_SERVO_EMIN          40
+#define CFG_SERVO_EMAX          130
 #define CFG_SERVO_SCALE_NUM     180
-#define CFG_SERVO_SCALE_DEN     180
+#define CFG_SERVO_SCALE_DEN     90
 #define CFG_EC11_TO_SERVO(x) (((x) < CFG_SERVO_EMIN) ? CFG_SERVO_SMIN : (((x) > CFG_SERVO_EMAX) ? CFG_SERVO_SMAX : (CFG_SERVO_SMIN + ((x) - CFG_SERVO_EMIN) * CFG_SERVO_SCALE_NUM / CFG_SERVO_SCALE_DEN)))
 
 /* ---- RGB ---- */
