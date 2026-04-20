@@ -171,7 +171,10 @@ static void rgb_task(void *arg)
 // ================================================================
 // 消费者3：GC9A01 方块旋转
 // ================================================================
-static lv_obj_t *s_gc_square = NULL;
+static lv_obj_t *s_gc_image = NULL;
+
+// 声明外部图片（由 images/resized-image.c 生成）
+LV_IMAGE_DECLARE(resized_image);
 
 static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
 {
@@ -215,15 +218,13 @@ static void lvgl_task(void *arg)
     lv_obj_t *scr = lv_screen_active();
     lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
 
-    s_gc_square = lv_obj_create(scr);
-    lv_obj_set_size(s_gc_square, 80, 80);
-    lv_obj_set_pos(s_gc_square, 80, 80);
-    lv_obj_set_style_radius(s_gc_square, 0, 0);
-    lv_obj_set_style_bg_color(s_gc_square, lv_color_make(0, 0, 255), 0);
-    lv_obj_set_style_border_color(s_gc_square, lv_color_white(), 0);
-    lv_obj_set_style_border_width(s_gc_square, 4, 0);
-    lv_obj_set_style_transform_pivot_x(s_gc_square, 40, 0);
-    lv_obj_set_style_transform_pivot_y(s_gc_square, 40, 0);
+    // 显示自定义图片（240x240，居中铺满）
+    s_gc_image = lv_image_create(scr);
+    lv_image_set_src(s_gc_image, &resized_image);
+    lv_obj_align(s_gc_image, LV_ALIGN_CENTER, 0, 0);
+    // 设置旋转中心为图片中心
+    lv_obj_set_style_transform_pivot_x(s_gc_image, 120, 0);
+    lv_obj_set_style_transform_pivot_y(s_gc_image, 120, 0);
 
     int last_angle = -1;
     int lvgl_loop_cnt = 0;
@@ -234,12 +235,12 @@ static void lvgl_task(void *arg)
         if (xQueueReceive(s_lvgl_queue, &msg, 0) == pdTRUE) {
             if (msg.button == 0 && msg.angle != last_angle) {
                 last_angle = msg.angle;
-                int square_angle = msg.angle * 2;
-                lv_obj_set_style_transform_rotation(s_gc_square,
-                                                    (int16_t)(square_angle * 10), 0);
-                lv_obj_invalidate(s_gc_square);
+                int img_angle = msg.angle * 2;
+                lv_obj_set_style_transform_rotation(s_gc_image,
+                                                    (int16_t)(img_angle * 10), 0);
+                lv_obj_invalidate(s_gc_image);
                 changed = true;
-                ESP_LOGI(TAG, "[lvgl] angle=%d square_rot=%d", msg.angle, square_angle);
+                ESP_LOGI(TAG, "[lvgl] angle=%d img_angle=%d", msg.angle, img_angle);
             }
         }
 
