@@ -40,7 +40,6 @@ def validate_rgb(val, name):
 def generate_header(configs):
     servo = configs["servo"]
     rgb = configs["rgb"]
-    display = configs["display"]
     encoder = configs["encoder"]
 
     # === Validate ===
@@ -56,10 +55,6 @@ def generate_header(configs):
     for kf in keyframes:
         validate_angle(kf["angle"], "rgb.keyframes[].angle")
         validate_rgb(kf, "rgb.keyframes[]")
-
-    disp_mode = int(display["runtime_mode"])
-    if disp_mode < 1 or disp_mode > 4:
-        raise ValueError(f"display.runtime_mode must be 1-4, got {disp_mode}")
 
     enc_step = int(encoder["step_size"])
     enc_init = validate_angle(encoder["initial_angle"], "encoder.initial_angle")
@@ -114,13 +109,6 @@ def generate_header(configs):
         out.append(f"    {{{kf['angle']}, {kf['r']}, {kf['g']}, {kf['b']}}}{comma}")
     out.append("};")
     out.append("")
-
-    out.append("/* ---- Display ---- */")
-    out.append(f"#define CFG_DISPLAY_STARTUP_ROW0  \"{display['startup']['row0']}\"")
-    out.append(f"#define CFG_DISPLAY_STARTUP_ROW1  \"{display['startup']['row1']}\"")
-    out.append(f"#define CFG_DISPLAY_MODE           {disp_mode}")
-    out.append(f"#define CFG_DISPLAY_CUSTOM_TEXT   \"{display['custom_text']}\"")
-    out.append("")
     out.append("#endif /* APP_CONFIG_H */")
 
     return "\n".join(out)
@@ -143,7 +131,6 @@ def main():
     files = {
         "servo": os.path.join(input_dir, "servo.json"),
         "rgb": os.path.join(input_dir, "rgb.json"),
-        "display": os.path.join(input_dir, "display.json"),
         "encoder": os.path.join(input_dir, "encoder.json"),
     }
 
@@ -167,7 +154,6 @@ def main():
     print(f"  Servo initial: {configs['servo']['initial_angle']} deg")
     print(f"  Servo range: [{configs['servo']['ec11_to_servo']['servo_min']}, {configs['servo']['ec11_to_servo']['servo_max']}] from EC11 [{configs['servo']['ec11_to_servo']['ec11_min']}, {configs['servo']['ec11_to_servo']['ec11_max']}]")
     print(f"  RGB initial: ({configs['rgb']['initial']['r']}, {configs['rgb']['initial']['g']}, {configs['rgb']['initial']['b']})")
-    print(f"  Display mode: {configs['display']['runtime_mode']}")
     print(f"  Encoder step: {configs['encoder']['step_size']} deg/tick")
 
 

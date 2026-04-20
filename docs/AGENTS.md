@@ -27,16 +27,12 @@
 | EC11 编码器 | CLK (A相) | **GPIO5** | 内部上拉已开启 |
 | EC11 编码器 | DT (B相) | **GPIO6** | |
 | EC11 编码器 | SW (按键) | **GPIO7** | 按下低电平 |
-| LCD1602 I2C | SDA | **GPIO8** | PCF8574T 背板 |
-| LCD1602 I2C | SCL | **GPIO9** | PCF8574T 背板 |
 | GC9A01 SPI | DC | **GPIO1** | 数据/命令切换 |
 | GC9A01 SPI | RESX | **GPIO2** | 硬复位，低有效 |
 | GC9A01 SPI | CS | **GPIO10** | SPI 片选 |
 | GC9A01 SPI | MOSI | **GPIO11** | SPI 数据输出 |
 | GC9A01 SPI | CLK | **GPIO12** | SPI 时钟 |
 | WS2812 RGB | DIN | **GPIO48** | 板载 |
-
-**LCD1602 电源**：VCC → 5V，GND → GND。对比度由背板上的蓝色电位器调节。
 
 ---
 
@@ -52,7 +48,6 @@
 ├── control/                    # 用户可编辑的配置（JSON）
 │   ├── servo.json     # 舵机角度映射
 │   ├── rgb.json       # 颜色 keyframe
-│   ├── display.json   # LCD 显示模式和文字
 │   └── encoder.json   # 编码器步进/初始角度
 ├── docs/
 │   ├── ARCHITECTURE.md         # 详细架构/接口/API 文档
@@ -67,7 +62,6 @@
         ├── hal_servo.h/.c      # SG90 舵机，GPIO4，LEDC 50Hz
         ├── hal_rgb.h/.c        # WS2812，GPIO48，RMT 驱动
         ├── hal_ec11.h/.c       # EC11 编码器，GPIO5/6/7，轮询+ISR
-        ├── hal_lcd1602.h/.c    # LCD1602 + PCF8574，I2C GPIO8/9
         └── hal_gc9a01.h/.c     # GC9A01 1.28" 圆形 SPI LCD，直接 SPI
 ```
 
@@ -127,24 +121,7 @@ control/*.json  →  gen_config.py  →  main/app_config.h  →  main.c 编译
 
 中间角度自动线性插值。
 
-### 4.1.3 display.json — LCD 显示
-
-| 字段 | 说明 |
-|------|------|
-| `startup.row0/row1` | 开机显示的两行文字 |
-| `runtime_mode` | 运行时显示模式（1-4，见下表）|
-| `custom_text` | mode 2/4 时 Row1/Row0 显示的自定义文字 |
-
-**LCD 显示模式**：
-
-| 模式 | Row 0 | Row 1 |
-|------|-------|-------|
-| 1 | `Angle: XXX deg` | `R:XXX G:XXX B:XXX` |
-| 2 | `Angle: XXX deg` | `custom_text` |
-| 3 | `Angle: XXX deg` | （空白）|
-| 4 | `custom_text` | `Angle: XXX deg` |
-
-### 4.1.4 encoder.json — 编码器参数
+### 4.1.3 encoder.json — 编码器参数
 
 | 字段 | 说明 | 默认值 |
 |------|------|--------|
@@ -158,40 +135,39 @@ control/*.json  →  gen_config.py  →  main/app_config.h  →  main.c 编译
 
 ### v0.7 架构（2026-04-17）：事件总线 + 私有队列
 
-EC11 作为唯一输入源，通过 `event_broker` 发布事件；`consumer_task` 将事件转换为 `angle_msg_t` 后广播到 4 个**私有队列**，各任务独立运行互不阻塞：
+EC11 作为唯一输入源，通过 `event_broker` 发布事件；`consumer_task` 将事件转换为 `angle_msg_t` 后广播到 3 个**私有队列**，各任务独立运行互不阻塞：
 
 ```
 ec11_reader (优先级 12) ──发布──→ event_broker ──→ consumer_task (18)
                                                           │
                           ├─→ s_servo_queue  → servo_task (15) → 舵机 lerp 1°/10ms
                           ├─→ s_rgb_queue    → rgb_task (14)   → 颜色直接跳变
-                          ├─→ s_lvgl_queue   → lvgl_task (5)   → GC9A01 方块旋转
-                          └─→ s_lcd_queue    → lcd_task (3)    → LCD1602 100ms 刷新
+                          └─→ s_lvgl_queue   → lvgl_task (5)   → EC11 按键触发图片旋转 90 度
 ```
 
 ### 已验证功能
 - ✅ SG90 舵机 0°~180° 正常，EC11 限位 0°/180° 阻断
-- ✅ EC11 编码器旋转 + 按键正常（当前步进 **10°/格**，可通过 `control/encoder.json` 修改）
+- ✅ EC11 编码器旋转 + 按键正常（步进 **2°/格**，可通过 `control/encoder.json` 修改）
 - ✅ WS2812 RGB LED 正常，颜色直接跟随角度跳变（无渐变）
-- ✅ GC9A01 1.28" 圆形 LCD 正常，方块跟随 EC11 旋转（已修复 `lv_tick_inc` + RGB565 swap）
+- ✅ GC9A01 1.28" 圆形 LCD 正常，EC11 按键触发图片旋转 90 度
 
 ### EC11 架构说明
 - **旋转检测**：`ec11_reader_task` 以 10ms 周期轮询 CLK/DT 电平，通过下降沿判断方向和步进。完全在任务上下文执行，无需担心 ISR 阻塞问题。
-- **按键检测**：SW 仍使用 GPIO 下降沿中断 + 200us 消抖，ISR 内直接调用 `event_broker_broadcast`，不调用任何阻塞 API。
-- **`consumer_task`**（优先级 18）订阅事件总线，收到事件后立即计算 servo_target 和 RGB 颜色，广播到 4 个私有队列。
+- **按键检测**：SW 使用 GPIO 下降沿中断 + 200ms 消抖，ISR 内直接调用 `event_broker_broadcast`，不调用任何阻塞 API。
+- **`consumer_task`**（优先级 18）订阅事件总线，收到事件后立即计算 servo_target 和 RGB 颜色，广播到 3 个私有队列。
 
 ### 最近修改记录
-1. **v0.7 事件总线 + 私有队列**：引入 `event_broker.c/h`，`consumer_task` 广播到 4 个私有队列，彻底修复共享队列竞态。
-2. **EC11 GPIO 修复**：CLK/DT/SW 改回正确的 GPIO 5/6/7，消除与 LCD1602 SDA（GPIO8）冲突。
+1. **v0.7 事件总线 + 私有队列**：引入 `event_broker.c/h`，`consumer_task` 广播到 3 个私有队列，彻底修复共享队列竞态。
+2. **EC11 GPIO 修复**：CLK/DT/SW 改回正确的 GPIO 5/6/7。
 3. **EC11 轮询修复**：`EC11_POLL_MS` 10ms，优先级 12，修复 `vTaskDelay(0)` CPU 饿死。
 4. **GC9A01 竞态修复**：`lvgl_task` 在 `hal_gc9a01_spi_test()` 之后启动；`hal_gc9a01_init()` 每次调用都硬复位+清屏。
-5. **LVGL 旋转中心**：方块设置 `transform_pivot_x/y = 40`，绕中心旋转。
-6. **LVGL tick 修复**：`lvgl_task` 循环中添加 `lv_tick_inc(10)`，解决方块不旋转问题。
-7. **GC9A01 颜色修复**：`lvgl_flush_cb` 中添加 `lv_draw_sw_rgb565_swap()`，MADCTL 改回 0x00（RGB），解决紫色/色差问题。
-6. **EC11 限位**：0°/180° 限位阻断，反方向旋转解除。
-7. **RGB 响应**：移除渐变，EC11 转动时颜色直接跳变。
-8. **颜色映射修复**：90° 正确为蓝色 `(0,0,255)`。
-9. **flash.sh**：添加了 `XTENSA_TOOLCHAIN` PATH 修复 cmake 工具链路径问题。
+5. **LVGL 旋转中心**：图片设置 `transform_pivot_x/y = 120`（图片中心 240x240），绕中心旋转。
+6. **LVGL tick 修复**：`lvgl_task` 循环中添加 `lv_tick_inc(10)`，解决图片不旋转问题。
+7. **GC9A01 颜色修复**：`RGB565→BGR565` 像素交换，MADCTL=0x00，INVERSION=1，解决颜色反相问题。
+8. **EC11 限位**：0°/180° 限位阻断，反方向旋转解除。
+9. **RGB 响应**：移除渐变，EC11 转动时颜色直接跳变。
+10. **颜色映射修复**：90° 正确为蓝色 `(0,0,255)`。
+11. **GC9A01 旋转改为按键触发**：EC11 按下时图片旋转 90 度，不再随角度连续旋转。
 
 ---
 
@@ -216,14 +192,6 @@ cd /home/byd/Desktop/espattack
 - 新增传感器/执行器时，按 `hal_xxx.h / hal_xxx.c` 的命名规范新建文件，`main/CMakeLists.txt` 会自动递归收集 `.c` 文件。
 - SPI 传输中每 20 行必须调用 `vTaskDelay(1)` 让出 CPU，防止阻塞 scheduler。
 
-### LCD1602 调试提示
-- 如果屏幕出现满屏灰色块，通常是 **PCF8574 引脚映射** 问题。当前 `MAPPING=1`（反向映射）：
-  ```c
-  #define LCD_I2C_MAPPING     1   // 0=标准映射, 1=反向映射
-  ```
-- 如果屏幕只有背光没有字，**先旋转背板上的蓝色电位器调对比度**，再查软件。
-- 出现 `ESP_ERR_INVALID_RESPONSE` 时，代码已内置一次重试，若仍频繁报错需检查杜邦线接触或上拉电阻。
-
 ### GC9A01 调试提示
 - 初始化使用 Bodmer TFT_eSPI 序列，`hal_gc9a01_init()` 每次调用都会执行硬复位+初始化+清屏，确保 LVGL 接管时状态干净。
 - `lvgl_task` 必须在 `hal_gc9a01_spi_test()` **之后**启动，否则 SPI 测试和 LVGL flush 会竞态，导致屏幕状态错乱。
@@ -242,7 +210,7 @@ cd /home/byd/Desktop/espattack
 
 ## 8. 快速联系人机接口
 
-- **用户当前关注点**：GC9A01 方块应随 EC11 角度旋转；所有模块响应顺畅无延迟。
+- **用户当前关注点**：EC11 按键触发 GC9A01 图片旋转 90 度；所有模块响应顺畅无延迟。
 - **已知问题**：无重大未解决问题。
 
 *文档维护者：AI Agent + 人类开发者*  

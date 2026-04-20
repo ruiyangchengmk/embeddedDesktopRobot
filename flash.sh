@@ -14,7 +14,8 @@ export IDF_PYTHON_ENV_PATH="$HOME/.espressif/tools/python/v6.0/venv"
 PYTHON="$HOME/.espressif/tools/python/v6.0/venv/bin/python"
 IDF_PY="$HOME/.espressif/v6.0/esp-idf/tools/idf.py"
 XTENSA_TOOLCHAIN="$HOME/.espressif/tools/xtensa-esp-elf/esp-15.2.0_20251204/xtensa-esp-elf/bin"
-export PATH="$XTENSA_TOOLCHAIN:$PATH"
+NINJA="$HOME/.espressif/tools/ninja/1.12.1"
+export PATH="$XTENSA_TOOLCHAIN:$NINJA:$PATH"
 
 # 如果 build 目录被其他 Python 配置过，直接删掉重建
 if [ -f "build/CMakeCache.txt" ]; then

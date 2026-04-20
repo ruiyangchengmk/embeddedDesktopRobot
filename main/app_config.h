@@ -39,10 +39,4 @@ static const rgb_keyframe_t s_rgb_keyframes[CFG_RGB_KEYFRAME_COUNT] = {
     {180, 255, 0, 0}
 };
 
-/* ---- Display ---- */
-#define CFG_DISPLAY_STARTUP_ROW0  "  Hello World!"
-#define CFG_DISPLAY_STARTUP_ROW1  "  ESP32-S3 OK!"
-#define CFG_DISPLAY_MODE           1
-#define CFG_DISPLAY_CUSTOM_TEXT   "  Ready!"
-
 #endif /* APP_CONFIG_H */

@@ -1,6 +1,6 @@
 # ESP32-S3 端侧控制节点
 
-以 **ESP32-S3-DevKitC-1** 为核心的端侧控制节点，通过硬件抽象层 (HAL) 管理传感器与执行器，具备 EC11 编码器、SG90 舵机、WS2812 RGB LED、LCD1602 显示、GC9A01 圆形 LCD。
+以 **ESP32-S3-DevKitC-1** 为核心的端侧控制节点，通过硬件抽象层 (HAL) 管理传感器与执行器，具备 EC11 编码器、SG90 舵机、WS2812 RGB LED 和 GC9A01 圆形 LCD。
 
 ## 硬件平台
 
@@ -16,8 +16,6 @@
 | EC11 编码器 | CLK | GPIO5 |
 | EC11 编码器 | DT | GPIO6 |
 | EC11 编码器 | SW | GPIO7 |
-| LCD1602 I2C | SDA | GPIO8 |
-| LCD1602 I2C | SCL | GPIO9 |
 | GC9A01 SPI | DC | GPIO1 |
 | GC9A01 SPI | RESX | GPIO2 |
 | GC9A01 SPI | CS | GPIO10 |
@@ -46,7 +44,6 @@
 control/
 ├── servo.json     # 舵机角度映射
 ├── rgb.json       # RGB 颜色关键帧
-├── display.json   # LCD 显示模式
 └── encoder.json   # 编码器步进/初始角度
 ```
 
@@ -70,7 +67,6 @@ embeddedDesktopRobot/
 │       ├── hal_servo.h/.c     # SG90 舵机
 │       ├── hal_rgb.h/.c       # WS2812 RGB
 │       ├── hal_ec11.h/.c      # EC11 编码器
-│       ├── hal_lcd1602.h/.c   # LCD1602 I2C
 │       └── hal_gc9a01.h/.c    # GC9A01 SPI LCD
 └── docs/
     ├── AGENTS.md              # AI Agent 快速介入文档

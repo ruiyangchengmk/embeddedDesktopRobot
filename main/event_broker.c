@@ -44,7 +44,7 @@ static bool should_throttle(event_type_t type)
     int64_t now = esp_timer_get_time();
     int idx = (int)type;
     if (idx < 0 || idx >= 16) return true;
-    if (now - s_last_publish_us[idx] < 10000) {  // 10ms = 100Hz
+    if (now - s_last_publish_us[idx] < 1000) {  // 1ms = 1000Hz, allow all ec11 events
         return true;
     }
     s_last_publish_us[idx] = now;

@@ -9,8 +9,7 @@
  *   consumer     18  — 事件总线消费者，转换为 angle_msg 并广播到各队列
  *   servo_task   15  — 舵机：消费角度，做平滑 lerp
  *   rgb_task     14  — RGB：消费角度，实时更新颜色
- *   lvgl_task     5  — 显示：消费角度，驱动 GC9A01 方块旋转
- *   lcd_task      3  — LCD1602：定期刷新显示（慢，不影响其他硬件）
+ *   lvgl_task     5  — 显示：EC11 按键触发图片旋转
  */
 
 #include <stdio.h>
@@ -22,7 +21,6 @@
 #include "hal/hal_servo.h"
 #include "hal/hal_rgb.h"
 #include "hal/hal_ec11.h"
-#include "hal/hal_lcd1602.h"
 #include "hal/hal_gc9a01.h"
 
 #include "event_broker.h"
@@ -38,7 +36,6 @@ static const char *TAG = "APP";
 static QueueHandle_t s_servo_queue = NULL;
 static QueueHandle_t s_rgb_queue = NULL;
 static QueueHandle_t s_lvgl_queue = NULL;
-static QueueHandle_t s_lcd_queue = NULL;
 static QueueHandle_t s_consumer_queue = NULL;
 
 // 消费者消息格式
@@ -110,7 +107,6 @@ static void consumer_task(void *arg)
         xQueueSend(s_servo_queue, &msg, 0);
         xQueueSend(s_rgb_queue, &msg, 0);
         xQueueSend(s_lvgl_queue, &msg, 0);
-        xQueueSend(s_lcd_queue, &msg, 0);
 
         ESP_LOGI(TAG, "Angle: ec11=%d servo=%d RGB(%u,%u,%u)",
                  msg.angle, msg.servo_target, msg.r, msg.g, msg.b);
@@ -226,64 +222,41 @@ static void lvgl_task(void *arg)
     lv_obj_set_style_transform_pivot_x(s_gc_image, 120, 0);
     lv_obj_set_style_transform_pivot_y(s_gc_image, 120, 0);
 
-    int last_angle = -1;
     int lvgl_loop_cnt = 0;
+    int img_angle = 0;  // cumulative rotation angle in decidegrees
 
     while (1) {
         angle_msg_t msg;
         bool changed = false;
-        if (xQueueReceive(s_lvgl_queue, &msg, 0) == pdTRUE) {
-            if (msg.button == 0 && msg.angle != last_angle) {
-                last_angle = msg.angle;
-                int img_angle = msg.angle * 2;
+
+        if (xQueueReceive(s_lvgl_queue, &msg, pdMS_TO_TICKS(10)) == pdTRUE) {
+            if (msg.button == 1) {
+                /* EC11 button pressed: rotate image 90 degrees */
+                img_angle += 900;  // 90 degrees = 900 decidegrees
                 lv_obj_set_style_transform_rotation(s_gc_image,
-                                                    (int16_t)(img_angle * 10), 0);
-                lv_obj_invalidate(s_gc_image);
+                                                    (int16_t)img_angle, 0);
                 changed = true;
-                ESP_LOGI(TAG, "[lvgl] angle=%d img_angle=%d", msg.angle, img_angle);
+                ESP_LOGI(TAG, "[lvgl] BTN pressed, rotated to %d", img_angle);
             }
+        }
+
+        if (changed) {
+            lv_obj_invalidate(lv_screen_active());
         }
 
         lv_tick_inc(10);
-        lv_timer_handler();
+        uint32_t time_till_next = lv_timer_handler();
 
-        if (changed || (lvgl_loop_cnt % 200 == 0)) {
-            ESP_LOGI(TAG, "[lvgl] tick advanced, loop=%d", lvgl_loop_cnt);
+        if (lvgl_loop_cnt % 500 == 0) {
+            ESP_LOGI(TAG, "[lvgl] loop=%d img_angle=%d next_timer=%ums",
+                     lvgl_loop_cnt, img_angle, time_till_next);
+        }
+
+        if (time_till_next == 0) {
+            ESP_LOGW(TAG, "[lvgl] timer_handler returned 0, timers may be stuck!");
         }
         lvgl_loop_cnt++;
         vTaskDelay(pdMS_TO_TICKS(10));
-    }
-}
-
-// ================================================================
-// 消费者4：LCD1602 定期刷新
-// ================================================================
-static void lcd_task(void *arg)
-{
-    int last_display_angle = -1;
-
-    while (1) {
-        angle_msg_t msg;
-        if (xQueueReceive(s_lcd_queue, &msg, pdMS_TO_TICKS(100)) == pdTRUE) {
-            if (msg.button == 0 && msg.angle != last_display_angle) {
-                last_display_angle = msg.angle;
-                hal_lcd1602_set_cursor(0, 0);
-#if CFG_DISPLAY_MODE == 1
-                hal_lcd1602_printf_row0("Angle: %3d deg", msg.servo_target);
-                hal_lcd1602_printf_row1("R:%3u G:%3u B:%3u", msg.r, msg.g, msg.b);
-#elif CFG_DISPLAY_MODE == 2
-                hal_lcd1602_printf_row0("Angle: %3d deg", msg.servo_target);
-                hal_lcd1602_printf_row1("%s", CFG_DISPLAY_CUSTOM_TEXT);
-#elif CFG_DISPLAY_MODE == 3
-                hal_lcd1602_printf_row0("Angle: %3d deg", msg.servo_target);
-                hal_lcd1602_set_cursor(1, 0);
-                hal_lcd1602_print("                ");
-#elif CFG_DISPLAY_MODE == 4
-                hal_lcd1602_printf_row0("%s", CFG_DISPLAY_CUSTOM_TEXT);
-                hal_lcd1602_printf_row1("Angle: %3d deg", msg.servo_target);
-#endif
-            }
-        }
     }
 }
 
@@ -296,10 +269,9 @@ void app_main(void)
     s_servo_queue = xQueueCreate(10, sizeof(angle_msg_t));
     s_rgb_queue = xQueueCreate(10, sizeof(angle_msg_t));
     s_lvgl_queue = xQueueCreate(10, sizeof(angle_msg_t));
-    s_lcd_queue = xQueueCreate(10, sizeof(angle_msg_t));
     s_consumer_queue = xQueueCreate(10, sizeof(broker_event_t));
 
-    if (!s_servo_queue || !s_rgb_queue || !s_lvgl_queue || !s_lcd_queue || !s_consumer_queue) {
+    if (!s_servo_queue || !s_rgb_queue || !s_lvgl_queue || !s_consumer_queue) {
         ESP_LOGE(TAG, "Queue create failed");
         return;
     }
@@ -309,22 +281,15 @@ void app_main(void)
     ESP_ERROR_CHECK(event_broker_subscribe(EVENT_TYPE_ENCODER_ROTATE, s_consumer_queue));
     ESP_ERROR_CHECK(event_broker_subscribe(EVENT_TYPE_ENCODER_CLICK, s_consumer_queue));
 
-    // ---- 启动消费者任务（除 lvgl，避免与 SPI 测试竞态）----
+    // ---- 启动消费者任务 ----
     xTaskCreatePinnedToCore(consumer_task, "consumer", 4096, NULL, 18, NULL, 0);
     xTaskCreatePinnedToCore(servo_task,   "servo",   4096, NULL, 15, NULL, 0);
     xTaskCreatePinnedToCore(rgb_task,     "rgb",     4096, NULL, 14, NULL, 0);
-    xTaskCreatePinnedToCore(lcd_task,     "lcd",     4096, NULL,  3, NULL, 0);
 
     // ---- 初始化所有 HAL（任务已就绪，可接收事件）----
     ESP_ERROR_CHECK(hal_ec11_init() == HAL_OK ? ESP_OK : ESP_FAIL);
     ESP_ERROR_CHECK(hal_servo_init() == HAL_OK ? ESP_OK : ESP_FAIL);
     ESP_ERROR_CHECK(hal_rgb_init() == HAL_OK ? ESP_OK : ESP_FAIL);
-
-    hal_lcd1602_init();
-    hal_lcd1602_backlight(true);
-    hal_lcd1602_clear();
-    hal_lcd1602_printf_row0(CFG_DISPLAY_STARTUP_ROW0);
-    hal_lcd1602_printf_row1(CFG_DISPLAY_STARTUP_ROW1);
 
     // ---- GC9A01 SPI 测试 ----
     ESP_LOGI(TAG, ">>> hal_gc9a01_spi_test()...");
