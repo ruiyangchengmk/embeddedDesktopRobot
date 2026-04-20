@@ -126,7 +126,6 @@ hal_err_t hal_gc9a01_init(void)
     cmd(0x8E); cmd_data(0x8E, (uint8_t[]){0xFF}, 1);
     cmd(0x8F); cmd_data(0x8F, (uint8_t[]){0xFF}, 1);
     cmd(0xB6); cmd_data(0xB6, (uint8_t[]){0x00, 0x20}, 2);
-    cmd(0x3A); cmd_data(0x3A, (uint8_t[]){0x05}, 1);
     cmd(0x90); cmd_data(0x90, (uint8_t[]){0x08, 0x08, 0x08, 0x08}, 4);
     cmd(0xBD); cmd_data(0xBD, (uint8_t[]){0x06}, 1);
     cmd(0xBC); cmd_data(0xBC, (uint8_t[]){0x00}, 1);
@@ -155,10 +154,25 @@ hal_err_t hal_gc9a01_init(void)
     cmd(0x98); cmd_data(0x98, (uint8_t[]){0x3E, 0x07}, 2);
 
     // === Display ON sequence ===
-    cmd(0x35);  // TE ON
-    cmd_data(0x36, (uint8_t[]){0x00}, 1);  // MADCTL: RGB mode, no mirror
+    cmd_data(0x36, (uint8_t[]){GC9A01_MADCTL_VALUE}, 1);
+    cmd_data(0x3A, (uint8_t[]){GC9A01_COLMOD_VALUE}, 1);
     cmd(0x11);  // Sleep out
     vTaskDelay(pdMS_TO_TICKS(120));
+
+#if GC9A01_TE_ENABLE
+    // Datasheet 6.2.17: TEON (35h) requires one mode parameter.
+    cmd_data(0x35, (uint8_t[]){GC9A01_TE_MODE}, 1);
+#else
+    cmd(0x34);
+#endif
+
+#if GC9A01_COLOR_INVERSION
+    cmd(0x21);
+#else
+    cmd(0x20);
+#endif
+
+    cmd(0x13);  // Normal display mode on
     cmd(0x29);  // Display ON
     vTaskDelay(pdMS_TO_TICKS(20));
 
@@ -205,9 +219,17 @@ hal_err_t hal_gc9a01_draw_bitmap(int x_start, int y_start, int x_end, int y_end,
     uint8_t *row_buf = malloc(row_bytes);
     if (!row_buf) return HAL_ERR_NO_MEM;
 
-    const uint8_t *src = (const uint8_t *)color_data;
+    const uint16_t *src = (const uint16_t *)color_data;
     for (int y = 0; y < h; y++) {
-        memcpy(row_buf, src + y * row_bytes, row_bytes);
+        for (int i = 0; i < w; i++) {
+            uint16_t px = src[y * w + i];
+            // RGB565 → BGR565: swap R and B bits
+            uint16_t r = (px >> 11) & 0x1F;
+            uint16_t g = (px >> 5) & 0x3F;
+            uint16_t b = px & 0x1F;
+            row_buf[i * 2]     = (uint8_t)((b << 3) | (g & 0x07));
+            row_buf[i * 2 + 1] = (uint8_t)((g >> 3) | (r << 5));
+        }
         DC_HIGH();
         spi_transaction_t t = { .tx_buffer = row_buf, .length = row_bytes * 8 };
         spi_device_polling_transmit(s_spi, &t);

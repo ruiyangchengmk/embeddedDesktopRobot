@@ -8,12 +8,12 @@ PORT="/dev/ttyACM0"
 
 # 显式设置 ESP-IDF 环境变量，避免 idf_component_manager 报 TypeError
 export ESP_IDF_VERSION=6.0.0
-export IDF_PYTHON_ENV_PATH="/home/byd/.espressif/tools/python/v6.0/venv"
+export IDF_PYTHON_ENV_PATH="$HOME/.espressif/tools/python/v6.0/venv"
 
 # eim v6.0 环境的固定路径
-PYTHON="/home/byd/.espressif/tools/python/v6.0/venv/bin/python"
-IDF_PY="/home/byd/.espressif/v6.0/esp-idf/tools/idf.py"
-XTENSA_TOOLCHAIN="/home/byd/.espressif/tools/xtensa-esp-elf/esp-15.2.0_20251204/xtensa-esp-elf/bin"
+PYTHON="$HOME/.espressif/tools/python/v6.0/venv/bin/python"
+IDF_PY="$HOME/.espressif/v6.0/esp-idf/tools/idf.py"
+XTENSA_TOOLCHAIN="$HOME/.espressif/tools/xtensa-esp-elf/esp-15.2.0_20251204/xtensa-esp-elf/bin"
 export PATH="$XTENSA_TOOLCHAIN:$PATH"
 
 # 如果 build 目录被其他 Python 配置过，直接删掉重建

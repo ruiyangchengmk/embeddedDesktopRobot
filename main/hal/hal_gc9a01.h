@@ -19,6 +19,13 @@ extern "C" {
 #define GC9A01_WIDTH   240
 #define GC9A01_HEIGHT  240
 
+// Tunable panel settings for bring-up/debugging.
+#define GC9A01_MADCTL_VALUE       0x00
+#define GC9A01_COLMOD_VALUE       0x05
+#define GC9A01_TE_ENABLE          0
+#define GC9A01_TE_MODE            0x00
+#define GC9A01_COLOR_INVERSION    1
+
 hal_err_t hal_gc9a01_init(void);
 
 // Direct SPI test (bypasses esp_lcd framework)
