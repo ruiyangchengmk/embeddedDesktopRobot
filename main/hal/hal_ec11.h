@@ -41,15 +41,6 @@ hal_err_t hal_ec11_init(void);
 hal_err_t hal_ec11_deinit(void);
 
 /**
- * @brief Register user callback for encoder events.
- *
- * @param cb Callback function.
- * @param user_data Optional user context.
- * @return HAL_OK on success.
- */
-hal_err_t hal_ec11_register_callback(hal_ec11_cb_t cb, void *user_data);
-
-/**
  * @brief Get the event queue handle for use with FreeRTOS xQueueReceive.
  *
  * Use this to receive EC11 events in a task context instead of callbacks.

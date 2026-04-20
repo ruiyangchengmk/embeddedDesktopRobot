@@ -1,10 +1,6 @@
-<<<<<<< HEAD
-# embeddedDesktopRobot
-v0.0001
-=======
 # ESP32-S3 端侧控制节点
 
-以 **ESP32-S3-DevKitC-1** 为核心的端侧控制节点，通过硬件抽象层 (HAL) 管理传感器与执行器，具备 EC11 编码器、SG90 舵机、WS2812 RGB LED、LCD1602 显示。
+以 **ESP32-S3-DevKitC-1** 为核心的端侧控制节点，通过硬件抽象层 (HAL) 管理传感器与执行器，具备 EC11 编码器、SG90 舵机、WS2812 RGB LED、LCD1602 显示、GC9A01 圆形 LCD。
 
 ## 硬件平台
 
@@ -22,6 +18,11 @@ v0.0001
 | EC11 编码器 | SW | GPIO7 |
 | LCD1602 I2C | SDA | GPIO8 |
 | LCD1602 I2C | SCL | GPIO9 |
+| GC9A01 SPI | DC | GPIO1 |
+| GC9A01 SPI | RESX | GPIO2 |
+| GC9A01 SPI | CS | GPIO10 |
+| GC9A01 SPI | MOSI | GPIO11 |
+| GC9A01 SPI | CLK | GPIO12 |
 | WS2812 RGB | DIN | GPIO48 |
 
 ## 快速开始
@@ -54,7 +55,7 @@ control/
 ## 项目结构
 
 ```
-espattack/
+embeddedDesktopRobot/
 ├── CMakeLists.txt
 ├── sdkconfig
 ├── flash.sh
@@ -63,16 +64,20 @@ espattack/
 ├── main/
 │   ├── app_config.h           # 自动生成
 │   ├── main.c
+│   ├── event_broker.c/.h      # 本地事件总线
 │   └── hal/
 │       ├── hal_common.h
 │       ├── hal_servo.h/.c     # SG90 舵机
 │       ├── hal_rgb.h/.c       # WS2812 RGB
 │       ├── hal_ec11.h/.c      # EC11 编码器
-│       └── hal_lcd1602.h/.c   # LCD1602 I2C
+│       ├── hal_lcd1602.h/.c   # LCD1602 I2C
+│       └── hal_gc9a01.h/.c    # GC9A01 SPI LCD
 └── docs/
     ├── AGENTS.md              # AI Agent 快速介入文档
     ├── ARCHITECTURE.md        # 架构/API 文档
-    └── PROJECT_LOG.md         # 开发日志
+    ├── PROJECT_LOG.md         # 开发日志
+    ├── DEBUG_LOG.md           # 根因分析手册
+    └── TUTORIAL.md            # 初学者教学文档
 ```
 
 ## 文档
@@ -80,4 +85,5 @@ espattack/
 - [AI Agent 快速介入文档](docs/AGENTS.md) — 项目全貌、接线表、配置说明
 - [架构文档](docs/ARCHITECTURE.md) — HAL 接口、任务设计
 - [过程日志](docs/PROJECT_LOG.md) — 接线备忘、开发记录
->>>>>>> 7a3ca79 (feat: ESP32-S3 端侧控制节点初始版本)
+- [调试记录](docs/DEBUG_LOG.md) — 根因分析手册
+- [教学文档](docs/TUTORIAL.md) — 初学者入门指南

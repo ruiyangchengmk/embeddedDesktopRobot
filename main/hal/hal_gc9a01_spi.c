@@ -103,15 +103,15 @@ hal_err_t hal_gc9a01_init(void)
 
     // === Bodmer TFT_eSPI GC9A01 init (verbatim) ===
     cmd(0xEF);
-    cmd(0xEB); cmd_data(0xEB, (uint8_t[]){0x14}, 1);
-    cmd(0xEB); cmd_data(0xEB, (uint8_t[]){0x14}, 1);
-    cmd(0xEB); cmd_data(0xEB, (uint8_t[]){0x14}, 1);
+    cmd_data(0xEB, (uint8_t[]){0x14}, 1);
+    cmd_data(0xEB, (uint8_t[]){0x14}, 1);
+    cmd_data(0xEB, (uint8_t[]){0x14}, 1);
 
     cmd(0xFE);
     cmd(0xEF);
-    cmd(0xEB); cmd_data(0xEB, (uint8_t[]){0x14}, 1);
-    cmd(0xEB); cmd_data(0xEB, (uint8_t[]){0x14}, 1);
-    cmd(0xEB); cmd_data(0xEB, (uint8_t[]){0x14}, 1);
+    cmd_data(0xEB, (uint8_t[]){0x14}, 1);
+    cmd_data(0xEB, (uint8_t[]){0x14}, 1);
+    cmd_data(0xEB, (uint8_t[]){0x14}, 1);
 
     cmd(0x84); cmd_data(0x84, (uint8_t[]){0x40}, 1);
     cmd(0x85); cmd_data(0x85, (uint8_t[]){0xFF}, 1);
