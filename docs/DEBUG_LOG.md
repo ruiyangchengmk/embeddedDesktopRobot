@@ -304,46 +304,53 @@ while (1) {
 
 ---
 
-## 10. GC9A01 颜色偏差（紫色而非蓝色）
+## 10. GC9A01 颜色偏差（紫色/橙色而非正确颜色）
 
-**问题描述**：`lv_color_make(0, 0, 255)` 设置蓝色，但方块显示为紫色/洋红色。
+**问题描述**：纯色测试红/蓝/绿均显示错误颜色；LVGL 图像中蓝色区域显示为红/绿混合色。
 
 ### 根因分析
 
-这是一个 **三层字节序错位** 问题：
+GC9A01 的 SPI 总线接收存在两层理解分歧：
 
-1. **LVGL 9 内部颜色格式**：`lv_color_t` 在 `LV_COLOR_FORMAT_RGB565` 下渲染为 16bit 像素值
-2. **ESP32-S3 小端存储**：16bit 值 `0x001F`（蓝色 RGB565）在内存中存储为 `[0x1F, 0x00]`（低字节在前）
-3. **GC9A01 SPI 接收顺序**：面板把 SPI 总线上先收到的字节当作**高字节**（MSB first），因此实际接收到的值是 `0x1F00`
+1. **字节序问题**：ESP32-S3 小端存储，RGB565 像素 0xF800（红）在内存中为 `[0x00, 0xF8]`（低字节在前）。GC9A01 的 SPI MSB-first 模式把先收到的字节当作高字节，因此面板收到 `0x00F8`（纯绿），而非预期的 `0xF800`（红）。
 
-`0x1F00` 在 RGB565 中 = R=3, G=56, B=0（黄绿色），但由于之前 MADCTL 设为 BGR 模式，加上测试时的各种 workaround，最终呈现为紫色/洋红色。
+2. **颜色位序问题**：GC9A01 内部面板存储格式为 **BGR565**（面板数据手册规定），而非 RGB565。MADCTL=0x00 设为 RGB 模式后，像素通道解释仍然是 BGR——即面板把我们的 R 位当成 B，把 B 位当成 R。
 
-### 正确修复（而非 workaround）
+单独使用字节交换（SWAP-only）：红→蓝、蓝→红，但颜色不纯（通道位权重错位）。
+单独使用 BGR 位交换（BGR-only）：红色消失，完全错误。
+**两者叠加（BGR 位交换 + 字节交换）**：红/蓝/绿完全正确。
 
-参考 ESP-IDF 官方 `esp_lcd` 驱动做法：在 flush 回调中对 RGB565 buffer 做字节交换。
-
-LVGL 9 提供了专门的 API：`lv_draw_sw_rgb565_swap(buf, buf_size_px)`
+### 正确修复
 
 ```c
-static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
-{
-    // ESP32 小端 -> GC9A01 需要大端字节序
-    lv_draw_sw_rgb565_swap(px_map, lv_area_get_size(area));
+// hal_gc9a01_draw_bitmap() 像素处理循环
+for (int i = 0; i < w; i++) {
+    uint16_t px = src[y * w + i];
+    /* BGR565 位交换：把 RGB 像素的 R 和 B 通道互换 */
+    uint16_t r = (px >> 11) & 0x1F;
+    uint16_t g = (px >> 5) & 0x3F;
+    uint16_t b = px & 0x1F;
+    uint16_t swapped = (b << 11) | (g << 5) | r;  // BGR 格式
 
-    hal_gc9a01_draw_bitmap(area->x1, area->y1, area->x2 + 1, area->y2 + 1, px_map);
-    lv_display_flush_ready(disp);
+    /* 字节交换：ESP32 小端 [LO,HI] → SPI 发送 [HI,LO] */
+    row_buf[i * 2]     = (uint8_t)((swapped >> 8) & 0xFF);  // 高字节先发
+    row_buf[i * 2 + 1] = (uint8_t)(swapped & 0xFF);         // 低字节后发
 }
 ```
 
-同时把 MADCTL 从 `0x08`（BGR）改回 `0x00`（RGB），这样：
-- `0xF800` = 红色
-- `0x07E0` = 绿色
-- `0x001F` = 蓝色
-- `lv_color_make(0, 0, 255)` = 蓝色（正确）
+同时保持：
+- `MADCTL=0x00`（标准 RGB 模式）
+- `COLOR_INVERSION=1`（反转显示）
+- `lvgl_flush_cb` 中 **不做任何转换**，直接透传给 HAL
 
-### 错误做法
+### 调试方法
 
-在 SPI 测试阶段通过交换颜色常量值来做 workaround（例如把 RED 常量填 `0x001F`），这只是掩盖了字节序问题。当 LVGL 接管显示后，其内部生成的 RGB565 数据仍然会以错误的字节序发送，导致颜色偏差。
+用 `hal_gc9a01_spi_test()` 做纯色基线测试：
+- `0xF800`（红）→ 应显示红
+- `0x07E0`（绿）→ 应显示绿
+- `0x001F`（蓝）→ 应显示蓝
+
+如果顺序是蓝-绿-红，说明只需要字节交换。如果红色消失/变成其他色，说明需要字节交换 + BGR 位交换叠加。
 
 ---
 
@@ -359,4 +366,4 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px
 
 ---
 
-*最后更新：2026-04-17*
+*最后更新：2026-04-21*

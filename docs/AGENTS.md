@@ -163,11 +163,13 @@ ec11_reader (优先级 12) ──发布──→ event_broker ──→ consumer
 4. **GC9A01 竞态修复**：`lvgl_task` 在 `hal_gc9a01_spi_test()` 之后启动；`hal_gc9a01_init()` 每次调用都硬复位+清屏。
 5. **LVGL 旋转中心**：图片设置 `transform_pivot_x/y = 120`（图片中心 240x240），绕中心旋转。
 6. **LVGL tick 修复**：`lvgl_task` 循环中添加 `lv_tick_inc(10)`，解决图片不旋转问题。
-7. **GC9A01 颜色修复**：`RGB565→BGR565` 像素交换，MADCTL=0x00，INVERSION=1，解决颜色反相问题。
+7. **GC9A01 颜色修复 v1**：移除 `lvgl_flush_cb` 中的 `lv_draw_sw_rgb565_swap`（对 LE 无实际作用），在 HAL 层实现 RGB565→BGR565 位交换。
 8. **EC11 限位**：0°/180° 限位阻断，反方向旋转解除。
 9. **RGB 响应**：移除渐变，EC11 转动时颜色直接跳变。
 10. **颜色映射修复**：90° 正确为蓝色 `(0,0,255)`。
 11. **GC9A01 旋转改为按键触发**：EC11 按下时图片旋转 90 度，不再随角度连续旋转。
+12. **GC9A01 颜色修复 v2**：在 HAL 层同时实现 BGR565 位交换 + 字节交换（ESP32 小端字节序补偿），纯色测试红-蓝-绿完全正确。
+13. **EC11 旋转角度溢出修复**：`img_angle` 取模 3600，防止 `int16_t` 溢出导致旋转失效。
 
 ---
 
@@ -196,7 +198,7 @@ cd /home/byd/Desktop/espattack
 - 初始化使用 Bodmer TFT_eSPI 序列，`hal_gc9a01_init()` 每次调用都会执行硬复位+初始化+清屏，确保 LVGL 接管时状态干净。
 - `lvgl_task` 必须在 `hal_gc9a01_spi_test()` **之后**启动，否则 SPI 测试和 LVGL flush 会竞态，导致屏幕状态错乱。
 - MADCTL=0x00 设置标准 RGB 模式。
-- **RGB565 字节序修复**：`lvgl_flush_cb` 中必须调用 `lv_draw_sw_rgb565_swap(px_map, lv_area_get_size(area))`，补偿 ESP32 小端与 GC9A01 SPI 大端期望之间的差异。
+- **RGB565 字节序修复**：颜色修正在 `hal_gc9a01_draw_bitmap()` 内部实现（BGR565 位交换 + 字节交换），`lvgl_flush_cb` 无需额外处理。
 - **LVGL 心跳**：`lvgl_task` 循环中必须每周期调用 `lv_tick_inc(10)`，否则 `lv_timer_handler()` 永远不会触发重绘。
 - 每次 SPI 传输中每 20 行调用 `vTaskDelay(1)` 让出 CPU。
 
@@ -214,4 +216,4 @@ cd /home/byd/Desktop/espattack
 - **已知问题**：无重大未解决问题。
 
 *文档维护者：AI Agent + 人类开发者*  
-*最后一次更新：2026-04-17*
+*最后一次更新：2026-04-21*

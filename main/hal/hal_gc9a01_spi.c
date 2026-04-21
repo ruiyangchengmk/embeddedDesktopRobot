@@ -223,12 +223,14 @@ hal_err_t hal_gc9a01_draw_bitmap(int x_start, int y_start, int x_end, int y_end,
     for (int y = 0; y < h; y++) {
         for (int i = 0; i < w; i++) {
             uint16_t px = src[y * w + i];
-            // RGB565 → BGR565: swap R and B bits
+            /* BGR565 bit swap: extract R and B fields and swap them */
             uint16_t r = (px >> 11) & 0x1F;
             uint16_t g = (px >> 5) & 0x3F;
             uint16_t b = px & 0x1F;
-            row_buf[i * 2]     = (uint8_t)((b << 3) | (g & 0x07));
-            row_buf[i * 2 + 1] = (uint8_t)((g >> 3) | (r << 5));
+            /* Then byte swap LE→BE for SPI transmission */
+            uint16_t swapped = (b << 11) | (g << 5) | r;
+            row_buf[i * 2]     = (uint8_t)((swapped >> 8) & 0xFF);  // hi byte first
+            row_buf[i * 2 + 1] = (uint8_t)(swapped & 0xFF);         // lo byte second
         }
         DC_HIGH();
         spi_transaction_t t = { .tx_buffer = row_buf, .length = row_bytes * 8 };

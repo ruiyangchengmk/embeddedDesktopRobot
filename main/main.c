@@ -179,10 +179,6 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px
     int x_end   = area->x2 + 1;
     int y_end   = area->y2 + 1;
 
-    /* ESP32 is little-endian: RGB565 pixels are stored as [LO, HI] in memory.
-       GC9A01 expects [HI, LO] over SPI. Swap bytes before each flush. */
-    lv_draw_sw_rgb565_swap(px_map, lv_area_get_size(area));
-
     hal_gc9a01_draw_bitmap(x_start, y_start, x_end, y_end, px_map);
     lv_display_flush_ready(disp);
 }
@@ -232,7 +228,8 @@ static void lvgl_task(void *arg)
         if (xQueueReceive(s_lvgl_queue, &msg, pdMS_TO_TICKS(10)) == pdTRUE) {
             if (msg.button == 1) {
                 /* EC11 button pressed: rotate image 90 degrees */
-                img_angle += 900;  // 90 degrees = 900 decidegrees
+                img_angle += 900;         // 90 degrees = 900 decidegrees
+                img_angle %= 3600;         // keep within one rotation to avoid int16_t overflow
                 lv_obj_set_style_transform_rotation(s_gc_image,
                                                     (int16_t)img_angle, 0);
                 changed = true;

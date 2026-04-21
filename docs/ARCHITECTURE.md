@@ -331,7 +331,7 @@ hal_err_t net_mqtt_publish_heartbeat(void);
 
 **LVGL 9 关键配置：**
 - `lv_tick_inc(10)` 必须在 `lvgl_task` 的每个循环周期调用，否则 `lv_timer_handler()` 的内部 timer 不会推进，导致屏幕永远不刷新
-- `lvgl_flush_cb` 中必须调用 `lv_draw_sw_rgb565_swap()`，补偿 ESP32-S3 小端存储与 GC9A01 SPI 大端期望之间的字节序差异
+- `hal_gc9a01_draw_bitmap()` 内部实现 BGR565 位交换 + 字节交换，`lvgl_flush_cb` 无需额外处理
 
 ### 6.3 数据流（广播-订阅模式）
 
