@@ -37,7 +37,7 @@ def validate_rgb(val, name):
     return val
 
 
-def generate_header(configs):
+def generate_header(configs, mode_select):
     servo = configs["servo"]
     rgb = configs["rgb"]
     encoder = configs["encoder"]
@@ -108,6 +108,44 @@ def generate_header(configs):
         comma = "," if i < len(keyframes) - 1 else ""
         out.append(f"    {{{kf['angle']}, {kf['r']}, {kf['g']}, {kf['b']}}}{comma}")
     out.append("};")
+
+    # === Mode selection ===
+    out.append("")
+    out.append("/* ---- Display Mode ---- */")
+    if mode_select:
+        active = None
+        for m in mode_select:
+            if m.get("isCurrent", False):
+                active = m
+                break
+        if active:
+            dtype = active["displayType"]
+            out.append(f'#define CFG_DISPLAY_MODE_STRING "{dtype}"')
+            if dtype == "images_display_1":
+                out.append("#define CFG_MODE_IMAGES_DISPLAY_1 1")
+                out.append("#define CFG_MODE_CLOCK_DISPLAY    0")
+            elif dtype == "clockDisplay":
+                out.append("#define CFG_MODE_IMAGES_DISPLAY_1 0")
+                out.append("#define CFG_MODE_CLOCK_DISPLAY    1")
+                clock = active.get("clock", {})
+                out.append(f"#define CFG_CLOCK_SHOW_DATE       {1 if clock.get('showDate', True) else 0}")
+                out.append(f"#define CFG_CLOCK_SHOW_TIME       {1 if clock.get('showTime', True) else 0}")
+                out.append(f"#define CFG_CLOCK_UPDATE_MS       {clock.get('updateIntervalMs', 1000)}")
+                analog = clock.get("analogStyle", {})
+                out.append(f"#define CFG_CLOCK_ANALOG_FACE_R   {analog.get('faceRadius', 100)}")
+                out.append(f"#define CFG_CLOCK_ANALOG_HOUR_LEN {analog.get('hourHandLength', 60)}")
+                out.append(f"#define CFG_CLOCK_ANALOG_MIN_LEN  {analog.get('minuteHandLength', 80)}")
+                out.append(f"#define CFG_CLOCK_ANALOG_SEC_LEN  {analog.get('secondHandLength', 90)}")
+                out.append(f"#define CFG_CLOCK_ANALOG_SHOW_SEC {1 if analog.get('showSecondHand', True) else 0}")
+        else:
+            out.append('// No active display mode found in modeSelect.json')
+            out.append("#define CFG_MODE_IMAGES_DISPLAY_1 1")
+            out.append("#define CFG_MODE_CLOCK_DISPLAY    0")
+    else:
+        out.append("// modeSelect.json not found, default to images_display_1")
+        out.append("#define CFG_MODE_IMAGES_DISPLAY_1 1")
+        out.append("#define CFG_MODE_CLOCK_DISPLAY    0")
+
     out.append("")
     out.append("#endif /* APP_CONFIG_H */")
 
@@ -133,6 +171,7 @@ def main():
         "rgb": os.path.join(input_dir, "rgb.json"),
         "encoder": os.path.join(input_dir, "encoder.json"),
     }
+    mode_select_path = os.path.join(input_dir, "modeSelect.json")
 
     configs = {}
     for name, path in files.items():
@@ -141,8 +180,13 @@ def main():
             sys.exit(1)
         configs[name] = load_json(path)
 
+    mode_select = None
+    if os.path.exists(mode_select_path):
+        with open(mode_select_path, "r", encoding="utf-8") as f:
+            mode_select = json.load(f)
+
     try:
-        header = generate_header(configs)
+        header = generate_header(configs, mode_select)
     except Exception as e:
         print(f"ERROR: Config validation failed: {e}", file=sys.stderr)
         sys.exit(1)
@@ -155,6 +199,9 @@ def main():
     print(f"  Servo range: [{configs['servo']['ec11_to_servo']['servo_min']}, {configs['servo']['ec11_to_servo']['servo_max']}] from EC11 [{configs['servo']['ec11_to_servo']['ec11_min']}, {configs['servo']['ec11_to_servo']['ec11_max']}]")
     print(f"  RGB initial: ({configs['rgb']['initial']['r']}, {configs['rgb']['initial']['g']}, {configs['rgb']['initial']['b']})")
     print(f"  Encoder step: {configs['encoder']['step_size']} deg/tick")
+    if mode_select:
+        active = next((m for m in mode_select if m.get("isCurrent", False)), None)
+        print(f"  Display mode: {active['displayType'] if active else 'none (default: images_display_1)'}")
 
 
 if __name__ == "__main__":

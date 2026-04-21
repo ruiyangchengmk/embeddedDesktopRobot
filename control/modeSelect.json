@@ -1,0 +1,36 @@
+[
+    {
+        "displayType": "images_display_1",
+        "isCurrent": true,
+        "images": [
+            {
+                "description": "本地静态图片（main/images/resized-image.c）",
+                "localPath": "main/images/resized-image.c",
+                "size": "240x240",
+                "format": "RGB565"
+            }
+        ],
+        "description": "EC11 按键触发图片旋转 90°，EC11 旋转控制 RGB 颜色"
+    },
+    {
+        "displayType": "clockDisplay",
+        "isCurrent": false,
+        "clock": {
+            "showDate": true,
+            "showTime": true,
+            "updateIntervalMs": 1000,
+            "digitalFormat": {
+                "timeFormat": "HH:MM:SS",
+                "dateFormat": "YYYY-MM-DD"
+            },
+            "analogStyle": {
+                "faceRadius": 100,
+                "hourHandLength": 60,
+                "minuteHandLength": 80,
+                "secondHandLength": 90,
+                "showSecondHand": true
+            }
+        },
+        "description": "时钟显示模式：EC11 按键切换数字/指针显示，EC11 旋转切换显示内容（时间/日期/星期）"
+    }
+]

@@ -9,7 +9,7 @@
  *   consumer     18  — 事件总线消费者，转换为 angle_msg 并广播到各队列
  *   servo_task   15  — 舵机：消费角度，做平滑 lerp
  *   rgb_task     14  — RGB：消费角度，实时更新颜色
- *   lvgl_task     5  — 显示：EC11 按键触发图片旋转
+ *   lvgl_task     5  — 显示：图片旋转 或 时钟（由 modeSelect.json 控制）
  */
 
 #include <stdio.h>
@@ -17,11 +17,16 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "freertos/queue.h"
+#include "esp_timer.h"
 
 #include "hal/hal_servo.h"
 #include "hal/hal_rgb.h"
 #include "hal/hal_ec11.h"
 #include "hal/hal_gc9a01.h"
+#if CFG_MODE_CLOCK_DISPLAY
+#include "hal/hal_clock.h"
+#include "lvgl_clock.h"
+#endif
 
 #include "event_broker.h"
 #include "lvgl.h"
@@ -165,9 +170,12 @@ static void rgb_task(void *arg)
 }
 
 // ================================================================
-// 消费者3：GC9A01 方块旋转
+// 消费者3：GC9A01 显示（图片旋转 或 时钟）
 // ================================================================
 static lv_obj_t *s_gc_image = NULL;
+#if CFG_MODE_CLOCK_DISPLAY
+static int64_t s_last_clock_update_us = 0;
+#endif
 
 // 声明外部图片（由 images/resized-image.c 生成）
 LV_IMAGE_DECLARE(resized_image);
@@ -210,6 +218,7 @@ static void lvgl_task(void *arg)
     lv_obj_t *scr = lv_screen_active();
     lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
 
+#if CFG_MODE_IMAGES_DISPLAY_1
     // 显示自定义图片（240x240，居中铺满）
     s_gc_image = lv_image_create(scr);
     lv_image_set_src(s_gc_image, &resized_image);
@@ -217,36 +226,89 @@ static void lvgl_task(void *arg)
     // 设置旋转中心为图片中心
     lv_obj_set_style_transform_pivot_x(s_gc_image, 120, 0);
     lv_obj_set_style_transform_pivot_y(s_gc_image, 120, 0);
+#endif
+
+#if CFG_MODE_CLOCK_DISPLAY
+    hal_clock_init();
+    lvgl_clock_init(scr, CLOCK_DIGITAL);
+    s_last_clock_update_us = esp_timer_get_time();
+#endif
 
     int lvgl_loop_cnt = 0;
+#if CFG_MODE_IMAGES_DISPLAY_1
     int img_angle = 0;  // cumulative rotation angle in decidegrees
+#endif
 
     while (1) {
         angle_msg_t msg;
         bool changed = false;
 
         if (xQueueReceive(s_lvgl_queue, &msg, pdMS_TO_TICKS(10)) == pdTRUE) {
+#if CFG_MODE_IMAGES_DISPLAY_1 && CFG_MODE_CLOCK_DISPLAY
+            if (msg.button == 1) {
+                // Both modes active: button toggles display mode
+                if (lvgl_clock_is_active()) {
+                    lvgl_clock_set_mode(
+                        lvgl_clock_get_mode() == CLOCK_DIGITAL ? CLOCK_ANALOG : CLOCK_DIGITAL);
+                } else {
+                    img_angle += 900;
+                    img_angle %= 3600;
+                    lv_obj_set_style_transform_rotation(s_gc_image, (int16_t)img_angle, 0);
+                    changed = true;
+                }
+            } else {
+                // EC11 rotation: in clock mode cycles content
+                if (lvgl_clock_is_active()) {
+                    lvgl_clock_next_content();
+                }
+            }
+#elif CFG_MODE_IMAGES_DISPLAY_1
             if (msg.button == 1) {
                 /* EC11 button pressed: rotate image 90 degrees */
                 img_angle += 900;         // 90 degrees = 900 decidegrees
-                img_angle %= 3600;         // keep within one rotation to avoid int16_t overflow
+                img_angle %= 3600;         // keep within one rotation
                 lv_obj_set_style_transform_rotation(s_gc_image,
                                                     (int16_t)img_angle, 0);
                 changed = true;
                 ESP_LOGI(TAG, "[lvgl] BTN pressed, rotated to %d", img_angle);
             }
+#elif CFG_MODE_CLOCK_DISPLAY
+            if (msg.button == 1) {
+                lvgl_clock_set_mode(
+                    lvgl_clock_get_mode() == CLOCK_DIGITAL ? CLOCK_ANALOG : CLOCK_DIGITAL);
+            } else {
+                lvgl_clock_next_content();
+            }
+#endif
         }
 
         if (changed) {
             lv_obj_invalidate(lv_screen_active());
         }
 
+        // ---- Clock update (rate-limited) ----
+#if CFG_MODE_CLOCK_DISPLAY
+        if (lvgl_clock_is_active()) {
+            int64_t now_us = esp_timer_get_time();
+            int64_t elapsed = now_us - s_last_clock_update_us;
+            if (elapsed >= (int64_t)CFG_CLOCK_UPDATE_MS * 1000) {
+                lvgl_clock_update(false);
+                s_last_clock_update_us = now_us;
+            }
+        }
+#endif
+
         lv_tick_inc(10);
         uint32_t time_till_next = lv_timer_handler();
 
         if (lvgl_loop_cnt % 500 == 0) {
+#if CFG_MODE_IMAGES_DISPLAY_1
             ESP_LOGI(TAG, "[lvgl] loop=%d img_angle=%d next_timer=%ums",
                      lvgl_loop_cnt, img_angle, time_till_next);
+#elif CFG_MODE_CLOCK_DISPLAY
+            ESP_LOGI(TAG, "[lvgl] loop=%d clock_active=%d next_timer=%ums",
+                     lvgl_loop_cnt, lvgl_clock_is_active(), time_till_next);
+#endif
         }
 
         if (time_till_next == 0) {
