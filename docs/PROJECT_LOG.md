@@ -11,6 +11,7 @@
 | v0.5 | 2026-04-16 | 修复 LVGL timer 不触发问题（改用 `lv_refr_now`） |
 | v0.6 | 2026-04-16 | 广播-订阅架构重构，解决 SPI 阻塞导致的 2-3s 延迟 |
 | v0.7 | 2026-04-17 | 事件总线 + 私有队列；修复 EC11 GPIO 和 CPU 饿死；GC9A01 硬复位清屏修复 |
+| v0.8 | 2026-04-21 | GC9A01 颜色修复 v2（BGR位交换+字节交换）；EC11 旋转角度取模防溢出；移除 LCD1602；EC11 按键触发 GC9A01 图片旋转 90° |
 
 ---
 
@@ -72,6 +73,44 @@
   - `180°` → 红色 `(255, 0, 0)`
   - 中间角度线性插值渐变
 - **状态**：✅ 验证通过，旋转编码器时 RGB LED 颜色与舵机角度实时同步。
+
+### 2.6 GC9A01 1.28" 圆形 SPI LCD — 配置要点（v0.8 最终版）
+
+**GPIO**：`DC=GPIO1`, `RESX=GPIO2`, `CS=GPIO10`, `MOSI=GPIO11`, `CLK=GPIO12`
+**SPI**：40MHz，半双工（`SPI_DEVICE_HALFDUPLEX`），DMA auto
+
+> **Agent 快速上手要点**：以下 4 点是 GC9A01 能否正常工作的核心，任何一条缺失都会导致显示异常。
+
+1. **每次调用 `hal_gc9a01_init()` 都执行硬复位**：`RESX` 拉低 20ms → 释放等待 150ms。面板必须在初始化序列前处于已知状态。
+
+2. **HALF-DUPLEX 模式必须设置**：`devcfg.flags = SPI_DEVICE_HALFDUPLEX`。全双工模式下 DC 引脚无法在命令/数据间切换，显示会完全黑屏。
+
+3. **`lvgl_task` 必须在 `hal_gc9a01_spi_test()` 之后启动**：`spi_test` 执行全屏刷写，若 `lvgl_task` 先跑，其 partial buffer 脏区域会被 `spi_test` 的全屏清除覆盖，产生竞态。
+
+4. **颜色格式：MADCTL=0x00 + BGR565 位交换 + 字节交换**（见下方代码）。MADCTL=0x08（BGR 模式）单独使用会因字节序错位导致颜色整体偏色；必须配合 HAL 中的像素处理。
+
+**HAL 层像素处理（hal_gc9a01_draw_bitmap() 必须包含）：**
+```c
+// BGR565 位交换 + 字节交换（两者缺一不可）
+uint16_t r = (px >> 11) & 0x1F;
+uint16_t g = (px >> 5) & 0x3F;
+uint16_t b = px & 0x1F;
+uint16_t bgr = (b << 11) | (g << 5) | r;
+row_buf[i * 2]     = (uint8_t)((bgr >> 8) & 0xFF);  // 高字节先发
+row_buf[i * 2 + 1] = (uint8_t)(bgr & 0xFF);         // 低字节后发
+```
+
+**初始化序列要点（Bodmer TFT_eSPI 序列）：**
+- 0xEF → 0xEB×3 → 0xFE → 0xEF → 0xEB×3（进入寄存器组）
+- MADCTL=0x00（标准 RGB，不带 BGR 标志）
+- COLMOD=0x05（RGB565）
+- COLOR_INVERSION=1（开启反转）
+- 每帧像素传输后每 20 行调用 `vTaskDelay(1)` 让出 CPU，防止阻塞 EC11 轮询
+
+**旋转功能（EC11 按键触发）：**
+- `lvgl_task` 订阅 `s_lvgl_queue`，收到 `button==1` 时 `img_angle += 900`
+- `img_angle %= 3600` 防溢出（`int16_t` 上限 32767，3600×9=32400 仍在安全范围）
+- 旋转中心：`lv_obj_set_style_transform_pivot_x/y(s_gc_image, 120, 0)`（图片 240×240）
 
 ---
 
@@ -568,41 +607,50 @@ lv_refr_now(lv_display_get_default());  // 强制 SPI 刷新
 
 ---
 
-#### 遗留问题：颜色偏差（未完全解决）
+#### 遗留问题：GC9A01 颜色偏差 — 已解决（v0.8，2026-04-21）
 
 **表现：**
-- 全屏纯色测试（RED/GREEN/BLUE）：颜色顺序正确（交换测试值后红→绿→蓝全彩正确）
-- LVGL 方块颜色：`lv_color_make(0, 0, 255)` 设置为蓝色，显示为紫色
+- 全屏纯色测试（RED/GREEN/BLUE）：颜色顺序错误（橙红-蓝-草绿）
+- LVGL 图像蓝色区域显示为红/绿混合色
 
-**分析：**
-- `lv_color_make(R, G, B)` 在 LVGL 9.x 中按 RGB565 格式存储
-- 面板 SPI 以字节为单位传输（高字节先发或低字节先发，取决于字节序）
-- MADCTL=0x08 设为 BGR 模式，但 LVGL flush 数据的字节序与面板解读不一致
-- 精确的字节交换关系需要用示波器抓取 SPI MOSI 波形确认
+**根因（两层字节序错位）：**
+1. **字节序**：ESP32-S3 小端存储，SPI MSB-first 发送时 GC9A01 把先收到的字节当高字节，导致颜色通道整体错位
+2. **颜色位序**：GC9A01 面板内部格式为 BGR565（而非 RGB565），MADCTL=0x00 设为 RGB 后 R/B 通道被面板反向解读
 
-**当前状态：**
-- 全屏验证阶段通过交换测试值（RED=0x001F, BLUE=0xF800）使颜色顺序正确
-- LVGL 方块颜色偏差属于 LVGL RGB565 → SPI 字节序 → 面板 BGR 解释的三层映射问题
-- 建议后续用示波器抓取实际 SPI 波形，确认字节序后修复 flush 数据的字节交换逻辑
+**修复方案（v0.8）：**
+在 `hal_gc9a01_draw_bitmap()` 中同时做 BGR565 位交换和字节交换：
+```c
+// BGR 位交换：RGB→BGR
+uint16_t bgr = (b << 11) | (g << 5) | r;
+// 字节交换：ESP32 小端 [LO,HI] → SPI [HI,LO]
+row_buf[i*2]   = (bgr >> 8) & 0xFF;  // 高字节先发
+row_buf[i*2+1] = bgr & 0xFF;          // 低字节后发
+```
+同时 `lvgl_flush_cb` 不再做额外转换（透传给 HAL）。
+
+**调试方法（纯色基线测试）：**
+| 发送值 | 预期颜色 | 零转换结果 | 字节交换结果 | BGR+字节交换 |
+|--------|----------|-----------|-------------|-------------|
+| 0xF800 | 红 | 橙红 ❌ | 蓝 ❌ | **红 ✅** |
+| 0x07E0 | 绿 | 蓝 ❌ | 绿 ✅ | **绿 ✅** |
+| 0x001F | 蓝 | 草绿 ❌ | 红 ❌ | **蓝 ✅** |
 
 ---
 
-### 5.5 GPIO 占用全览（2026-04-16 当前）
+### 5.5 GPIO 占用全览（2026-04-21 当前）
 
 | GPIO | 用途 | 备注 |
 |------|------|------|
-| GPIO1 | GC9A01 DC / LCD1602 SDA | 复用（I2C vs SPI 分离） |
-| GPIO2 | GC9A01 RESX（复位） | 低有效 |
-| GPIO4 | SG90 舵机 PWM | |
-| GPIO5 | EC11 A相（CLK） | |
+| GPIO1 | GC9A01 DC | SPI 数据/命令切换 |
+| GPIO2 | GC9A01 RESX | 硬复位，低有效 |
+| GPIO4 | SG90 舵机 PWM | 5V 供电 |
+| GPIO5 | EC11 A相（CLK） | 内部上拉已开启 |
 | GPIO6 | EC11 B相（DT） | |
-| GPIO7 | EC11 按键（SW） | |
-| GPIO8 | LCD1602 SDA | I2C0 |
-| GPIO9 | LCD1602 SCL | I2C0 |
-| GPIO10 | GC9A01 CS | SPI2 |
-| GPIO11 | GC9A01 SDA(MOSI) | SPI2 |
-| GPIO12 | GC9A01 SCL(CLK) | SPI2 |
-| GPIO48 | RGB LED DIN | RMT |
+| GPIO7 | EC11 按键（SW） | 按下低电平，200ms 消抖 |
+| GPIO10 | GC9A01 CS | SPI2 片选 |
+| GPIO11 | GC9A01 SDA(MOSI) | SPI 数据输出 |
+| GPIO12 | GC9A01 SCL(CLK) | SPI 时钟，40MHz |
+| GPIO48 | RGB LED DIN | 板载 WS2812 |
 
 ---
 
