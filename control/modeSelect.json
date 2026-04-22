@@ -1,7 +1,7 @@
 [
     {
         "displayType": "images_display_1",
-        "isCurrent": true,
+        "isCurrent": false,
         "images": [
             {
                 "description": "本地静态图片（main/images/resized-image.c）",
@@ -14,7 +14,7 @@
     },
     {
         "displayType": "clockDisplay",
-        "isCurrent": false,
+        "isCurrent": true,
         "clock": {
             "showDate": true,
             "showTime": true,

@@ -19,6 +19,8 @@
 #include "freertos/queue.h"
 #include "esp_timer.h"
 
+#include "app_config.h"
+
 #include "hal/hal_servo.h"
 #include "hal/hal_rgb.h"
 #include "hal/hal_ec11.h"
@@ -31,7 +33,6 @@
 #include "event_broker.h"
 #include "lvgl.h"
 #include "lvgl/src/draw/sw/lv_draw_sw.h"
-#include "app_config.h"
 
 static const char *TAG = "APP";
 
@@ -294,6 +295,8 @@ static void lvgl_task(void *arg)
             if (elapsed >= (int64_t)CFG_CLOCK_UPDATE_MS * 1000) {
                 lvgl_clock_update(false);
                 s_last_clock_update_us = now_us;
+                // Force LVGL to process invalidated areas immediately
+                lv_timer_handler();
             }
         }
 #endif
@@ -314,8 +317,11 @@ static void lvgl_task(void *arg)
         if (time_till_next == 0) {
             ESP_LOGW(TAG, "[lvgl] timer_handler returned 0, timers may be stuck!");
         }
+        if (time_till_next > 100) {
+            time_till_next = 100;  // clamp unreasonably-large values
+        }
         lvgl_loop_cnt++;
-        vTaskDelay(pdMS_TO_TICKS(10));
+        vTaskDelay(pdMS_TO_TICKS(time_till_next ? time_till_next : 1));
     }
 }
 

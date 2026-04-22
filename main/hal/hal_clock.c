@@ -1,13 +1,14 @@
 /**
  * hal_clock.c — 软件计时器时钟（无 NTP/WiFi 依赖）
  *
- * 基于 esp_timer 实现，上电后从 00:00:00 开始计数。
- * 断电后时间丢失（上电重新计时），符合需求。
+ * 基于 esp_timer 实现，初始化时使用编译时主机时间作为起始时间。
+ * 断电后时间丢失，符合需求。
  *
  * 时间更新精度：秒级。
  */
 
 #include "hal_clock.h"
+#include "app_config.h"
 #include "esp_timer.h"
 #include "esp_log.h"
 #include <stdio.h>
@@ -24,13 +25,30 @@ static const char *s_dow_names[] = {
 
 int hal_clock_init(void)
 {
-    s_start_us = esp_timer_get_time();
-    if (s_start_us == 0) {
-        // zero is also valid but unlikely; check monotonic
-        s_start_us = esp_timer_get_time();
+    // 使用编译时主机时间作为起始基准
+    struct tm tm_build;
+    memset(&tm_build, 0, sizeof(tm_build));
+    tm_build.tm_year = CFG_BUILD_YEAR - 1900;
+    tm_build.tm_mon  = CFG_BUILD_MONTH - 1;
+    tm_build.tm_mday = CFG_BUILD_DAY;
+    tm_build.tm_hour = CFG_BUILD_HOUR;
+    tm_build.tm_min  = CFG_BUILD_MIN;
+    tm_build.tm_sec  = 0;
+    tm_build.tm_isdst = 0;
+
+    time_t build_epoch = mktime(&tm_build);
+    if (build_epoch == (time_t)-1) {
+        build_epoch = 0;
     }
+
+    // 计算从编译时刻到当前 boot 的时间偏移
+    int64_t boot_us = esp_timer_get_time();
+    s_start_us = boot_us - (int64_t)build_epoch * 1000000LL;
+
     s_init_ok = true;
-    ESP_LOGI(TAG, "Clock started from boot, base=%lld us", (long long)s_start_us);
+    ESP_LOGI(TAG, "Clock initialized from build time: %04d-%02d-%02d %02d:%02d (boot_offset=%lld us)",
+             CFG_BUILD_YEAR, CFG_BUILD_MONTH, CFG_BUILD_DAY,
+             CFG_BUILD_HOUR, CFG_BUILD_MIN, (long long)s_start_us);
     return 0;
 }
 

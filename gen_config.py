@@ -14,6 +14,7 @@ import json
 import os
 import sys
 import argparse
+import datetime
 
 
 def load_json(path):
@@ -78,7 +79,6 @@ def generate_header(configs, mode_select):
 
     out.append("/* ---- Servo ---- */")
     out.append(f"#define CFG_SERVO_INITIAL       {servo_init}")
-    # 内联映射宏 (scaler is fixed-point to avoid float)
     scale_num = s_max - s_min
     scale_den = e_max - e_min
     out.append(f"/* EC11->Servo: servo = servo_min + (ec11 - ec11_min) * (servo_max - servo_min) / (ec11_max - ec11_min) */")
@@ -88,7 +88,6 @@ def generate_header(configs, mode_select):
     out.append(f"#define CFG_SERVO_EMAX          {e_max}")
     out.append(f"#define CFG_SERVO_SCALE_NUM     {scale_num}")
     out.append(f"#define CFG_SERVO_SCALE_DEN     {scale_den}")
-    # Inline macro - all on one line to avoid backslash-continuation issues
     out.append(f"#define CFG_EC11_TO_SERVO(x) (((x) < CFG_SERVO_EMIN) ? CFG_SERVO_SMIN : (((x) > CFG_SERVO_EMAX) ? CFG_SERVO_SMAX : (CFG_SERVO_SMIN + ((x) - CFG_SERVO_EMIN) * CFG_SERVO_SCALE_NUM / CFG_SERVO_SCALE_DEN)))")
     out.append("")
     out.append("/* ---- RGB ---- */")
@@ -97,7 +96,6 @@ def generate_header(configs, mode_select):
     out.append(f"#define CFG_RGB_INITIAL_B       {rgb_init['b']}")
     out.append(f"#define CFG_RGB_KEYFRAME_COUNT  {len(keyframes)}")
     out.append("")
-
     out.append("typedef struct {")
     out.append("    int angle;")
     out.append("    uint8_t r, g, b;")
@@ -138,13 +136,23 @@ def generate_header(configs, mode_select):
                 out.append(f"#define CFG_CLOCK_ANALOG_SEC_LEN  {analog.get('secondHandLength', 90)}")
                 out.append(f"#define CFG_CLOCK_ANALOG_SHOW_SEC {1 if analog.get('showSecondHand', True) else 0}")
         else:
-            out.append('// No active display mode found in modeSelect.json')
+            out.append("// No active display mode found in modeSelect.json")
             out.append("#define CFG_MODE_IMAGES_DISPLAY_1 1")
             out.append("#define CFG_MODE_CLOCK_DISPLAY    0")
     else:
         out.append("// modeSelect.json not found, default to images_display_1")
         out.append("#define CFG_MODE_IMAGES_DISPLAY_1 1")
         out.append("#define CFG_MODE_CLOCK_DISPLAY    0")
+
+    # === Build timestamp ===
+    now = datetime.datetime.now()
+    out.append("")
+    out.append("/* ---- Build Timestamp (host PC time when flashed) ---- */")
+    out.append(f"#define CFG_BUILD_YEAR  {now.year}")
+    out.append(f"#define CFG_BUILD_MONTH {now.month}")
+    out.append(f"#define CFG_BUILD_DAY   {now.day}")
+    out.append(f"#define CFG_BUILD_HOUR  {now.hour}")
+    out.append(f"#define CFG_BUILD_MIN   {now.minute}")
 
     out.append("")
     out.append("#endif /* APP_CONFIG_H */")
@@ -194,6 +202,7 @@ def main():
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(header)
 
+    now = datetime.datetime.now()
     print(f"Generated: {output_path}")
     print(f"  Servo initial: {configs['servo']['initial_angle']} deg")
     print(f"  Servo range: [{configs['servo']['ec11_to_servo']['servo_min']}, {configs['servo']['ec11_to_servo']['servo_max']}] from EC11 [{configs['servo']['ec11_to_servo']['ec11_min']}, {configs['servo']['ec11_to_servo']['ec11_max']}]")
@@ -202,6 +211,7 @@ def main():
     if mode_select:
         active = next((m for m in mode_select if m.get("isCurrent", False)), None)
         print(f"  Display mode: {active['displayType'] if active else 'none (default: images_display_1)'}")
+    print(f"  Build time: {now.year}-{now.month:02d}-{now.day:02d} {now.hour:02d}:{now.minute:02d}")
 
 
 if __name__ == "__main__":
