@@ -14,7 +14,7 @@
     },
     {
         "displayType": "clockDisplay",
-        "isCurrent": true,
+        "isCurrent": false,
         "clock": {
             "showDate": true,
             "showTime": true,
@@ -35,7 +35,7 @@
     },
     {
         "displayType": "images_display_2",
-        "isCurrent": false,
+        "isCurrent": true,
         "images": [
             {
                 "description": "表情包1",
