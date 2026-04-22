@@ -86,8 +86,11 @@ ESP32 芯片里面有两个 CPU 核心。但如果没有操作系统，程序只
 │  任务 C: rgb_task (优先级 14)                │
 │     接收广播，立即更新 RGB 颜色              │
 ├─────────────────────────────────────────────┤
-│  任务 D: lvgl_task (优先级 5)                │
-│     EC11 按键时触发 GC9A01 图片旋转          │
+│  任务 D: consumer (优先级 18)                │
+│     接收 EC11 广播，转发到各消费者队列        │
+├─────────────────────────────────────────────┤
+│  任务 E: lvgl_task (优先级 5)               │
+│     EC11 按键切换数字/指针时钟，旋转切换内容   │
 └─────────────────────────────────────────────┘
 ```
 
@@ -204,7 +207,7 @@ xQueueSend(s_angle_queue, &msg, 0);  // 广播给所有消费者
 ### Step 4: 消费者任务独立响应
 **servo_task**（优先级 15）收到消息，每 10ms 将舵机 lerp 1° 逼近目标：
 **rgb_task**（优先级 14）收到消息，立即更新 RGB 颜色（无延迟）：
-**lvgl_task**（优先级 5）收到消息，更新方块旋转角度，调用 `lv_refr_now()` 刷新：
+**lvgl_task**（优先级 5）收到消息：按键切换数字/指针时钟，旋转切换显示内容（时间/日期/星期），时钟每秒自动更新：
 ### Step 5: HAL 层翻译指令
 `hal_servo_set_angle(92)` 内部计算 PWM duty 值，调用 `ledc_set_duty()`，SG90 舵机收到新的脉冲宽度，开始转动到 92 度。
 
@@ -322,6 +325,18 @@ g_target_angle = 120;
 | CPU 让出 | 每传输 20 行 `vTaskDelay(1)` | 防止 SPI 阻塞 ec11_task |
 | 依赖组件 | `esp_lcd`（SPI 总线） | |
 
+### 时钟显示（lvgl_clock + hal_clock）
+| 配置项 | 默认值 | 说明 |
+|--------|-------|------|
+| 显示模式 | `modeSelect.json` 控制 | clockDisplay（时钟）或 images_display_1（图片） |
+| 数字格式 | HH:MM:SS | `hal_clock_get_time_str()` 输出 |
+| 日期格式 | YYYY-MM-DD | `hal_clock_get_date_str()` 输出 |
+| 时间源 | 编译主机时刻 | `gen_config.py` 嵌入 `CFG_BUILD_YEAR/MONTH/DAY/HOUR/MIN` |
+| 指针实现 | `lv_scale` (LV_SCALE_MODE_ROUND_INNER) | 优于手动画线，scale 自动处理指针旋转 |
+| EC11 按键 | 切换数字 ↔ 指针模式 | 调用 `lvgl_clock_set_mode()` |
+| EC11 旋转 | 切换显示内容 | CONTENT_TIME_ONLY → CONTENT_DATE_ONLY → CONTENT_TIME_DATE → CONTENT_DOW_DATE → 循环 |
+| 更新频率 | `CFG_CLOCK_UPDATE_MS`（默认 1000ms） | `lv_timer_handler()` 触发后主动调用刷新 |
+
 ### 事件总线（event_broker）
 | 配置项 | 说明 |
 |--------|------|
@@ -356,4 +371,4 @@ g_target_angle = 120;
 
 ---
 
-*文档更新：2026-04-16（v0.6 广播-订阅架构）*
+*文档更新：2026-04-22（v0.9 时钟显示模式：lv_scale 指针 + 编译时刻时间）*
