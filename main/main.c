@@ -178,7 +178,7 @@ static lv_obj_t *s_gc_image = NULL;
 static int64_t s_last_clock_update_us = 0;
 #endif
 
-// 声明外部图片（由 images/resized-image.c 生成）
+// 声明外部图片（由 control/images/resized-image.c 生成）
 LV_IMAGE_DECLARE(resized_image);
 
 static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)

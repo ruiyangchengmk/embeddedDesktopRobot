@@ -4,8 +4,8 @@
         "isCurrent": false,
         "images": [
             {
-                "description": "本地静态图片（main/images/resized-image.c）",
-                "localPath": "main/images/resized-image.c",
+                "description": "本地静态图片（control/images/resized-image.c）",
+                "localPath": "control/images/resized-image.c",
                 "size": "240x240",
                 "format": "RGB565"
             }
