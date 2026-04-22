@@ -5,7 +5,7 @@
 # app_config.h 由 main.c include，无需在此 CMakeLists 中处理
 
 file(GLOB HAL_SOURCES "hal/*.c")
-file(GLOB IMAGE_SOURCES "control/images/*.c")
+file(GLOB IMAGE_SOURCES "control/images/*.c" "control/images/c/*.c")
 
 idf_component_register(SRCS main.c event_broker.c lvgl_clock.c
                            ${HAL_SOURCES} ${IMAGE_SOURCES}

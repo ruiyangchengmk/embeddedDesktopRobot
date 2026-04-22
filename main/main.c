@@ -180,6 +180,10 @@ static int64_t s_last_clock_update_us = 0;
 
 // 声明外部图片（由 control/images/resized-image.c 生成）
 LV_IMAGE_DECLARE(resized_image);
+LV_IMAGE_DECLARE(emotion1);
+LV_IMAGE_DECLARE(emotion2);
+LV_IMAGE_DECLARE(emotion3);
+LV_IMAGE_DECLARE(emotion4);
 
 static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
 {
@@ -229,6 +233,13 @@ static void lvgl_task(void *arg)
     lv_obj_set_style_transform_pivot_y(s_gc_image, 120, 0);
 #endif
 
+#if CFG_MODE_IMAGES_DISPLAY_2
+    // 显示表情包图片（240x240，EC11按键切换）
+    s_gc_image = lv_image_create(scr);
+    lv_image_set_src(s_gc_image, &emotion1);
+    lv_obj_align(s_gc_image, LV_ALIGN_CENTER, 0, 0);
+#endif
+
 #if CFG_MODE_CLOCK_DISPLAY
     hal_clock_init();
     lvgl_clock_init(scr, CLOCK_DIGITAL);
@@ -238,6 +249,9 @@ static void lvgl_task(void *arg)
     int lvgl_loop_cnt = 0;
 #if CFG_MODE_IMAGES_DISPLAY_1
     int img_angle = 0;  // cumulative rotation angle in decidegrees
+#endif
+#if CFG_MODE_IMAGES_DISPLAY_2
+    int s_emotion_idx = 0;
 #endif
 
     while (1) {
@@ -280,6 +294,15 @@ static void lvgl_task(void *arg)
             } else {
                 lvgl_clock_next_content();
             }
+#elif CFG_MODE_IMAGES_DISPLAY_2
+            if (msg.button == 1) {
+                // EC11 button: cycle through 4 emotion images
+                static const void *emotion_images[4] = {&emotion1, &emotion2, &emotion3, &emotion4};
+                s_emotion_idx = (s_emotion_idx + 1) % 4;
+                lv_image_set_src(s_gc_image, emotion_images[s_emotion_idx]);
+                changed = true;
+                ESP_LOGI(TAG, "[lvgl] emotion idx=%d", s_emotion_idx);
+            }
 #endif
         }
 
@@ -308,6 +331,9 @@ static void lvgl_task(void *arg)
 #if CFG_MODE_IMAGES_DISPLAY_1
             ESP_LOGI(TAG, "[lvgl] loop=%d img_angle=%d next_timer=%ums",
                      lvgl_loop_cnt, img_angle, time_till_next);
+#elif CFG_MODE_IMAGES_DISPLAY_2
+            ESP_LOGI(TAG, "[lvgl] loop=%d emotion_idx=%d next_timer=%ums",
+                     lvgl_loop_cnt, s_emotion_idx, time_till_next);
 #elif CFG_MODE_CLOCK_DISPLAY
             ESP_LOGI(TAG, "[lvgl] loop=%d clock_active=%d next_timer=%ums",
                      lvgl_loop_cnt, lvgl_clock_is_active(), time_till_next);

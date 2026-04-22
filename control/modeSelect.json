@@ -32,5 +32,32 @@
             }
         },
         "description": "时钟显示模式：EC11 按键切换数字/指针显示，EC11 旋转切换显示内容（时间/日期/星期）"
+    },
+    {
+        "displayType": "images_display_2",
+        "isCurrent": false,
+        "images": [
+            {
+                "description": "表情包1",
+                "localPath": "control/images/c/emotion1.c",
+                "format": "RGB565"
+            },
+            {
+                "description": "表情包2",
+                "localPath": "control/images/c/emotion2.c",
+                "format": "RGB565"
+            },
+            {
+                "description": "表情包3",
+                "localPath": "control/images/c/emotion3.c",
+                "format": "RGB565"
+            },
+            {
+                "description": "表情包4",
+                "localPath": "control/images/c/emotion4.c",
+                "format": "RGB565"
+            }
+        ],
+        "description": "按EC11，依次切换静态图片"
     }
 ]

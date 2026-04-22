@@ -121,6 +121,11 @@ def generate_header(configs, mode_select):
             out.append(f'#define CFG_DISPLAY_MODE_STRING "{dtype}"')
             if dtype == "images_display_1":
                 out.append("#define CFG_MODE_IMAGES_DISPLAY_1 1")
+                out.append("#define CFG_MODE_IMAGES_DISPLAY_2 0")
+                out.append("#define CFG_MODE_CLOCK_DISPLAY    0")
+            elif dtype == "images_display_2":
+                out.append("#define CFG_MODE_IMAGES_DISPLAY_1 0")
+                out.append("#define CFG_MODE_IMAGES_DISPLAY_2 1")
                 out.append("#define CFG_MODE_CLOCK_DISPLAY    0")
             elif dtype == "clockDisplay":
                 out.append("#define CFG_MODE_IMAGES_DISPLAY_1 0")
@@ -138,10 +143,12 @@ def generate_header(configs, mode_select):
         else:
             out.append("// No active display mode found in modeSelect.json")
             out.append("#define CFG_MODE_IMAGES_DISPLAY_1 1")
+            out.append("#define CFG_MODE_IMAGES_DISPLAY_2 0")
             out.append("#define CFG_MODE_CLOCK_DISPLAY    0")
     else:
         out.append("// modeSelect.json not found, default to images_display_1")
         out.append("#define CFG_MODE_IMAGES_DISPLAY_1 1")
+        out.append("#define CFG_MODE_IMAGES_DISPLAY_2 0")
         out.append("#define CFG_MODE_CLOCK_DISPLAY    0")
 
     # === Build timestamp ===
