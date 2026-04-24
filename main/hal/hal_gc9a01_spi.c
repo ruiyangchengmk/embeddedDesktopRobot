@@ -48,9 +48,7 @@ static void cmd_data(uint8_t c, const uint8_t *d, size_t len)
 
 hal_err_t hal_gc9a01_init(void)
 {
-    bool first_init = false;
     if (!s_spi) {
-        first_init = true;
         ESP_LOGI(TAG, "Init starting...");
 
         gpio_set_direction(GC9A01_DCX_GPIO, GPIO_MODE_OUTPUT);

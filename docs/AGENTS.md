@@ -1,4 +1,4 @@
-# Agent 快速介入文档 — ESP32-S3 端侧控制系统
+# Agent 快速介入文档 — ESP32-S3 桌面机器人控制节点
 
 > **本文档的目标读者是 AI Agent**。阅读后应能在 3 分钟内理解项目全貌、当前状态、以及如何安全地继续开发。
 
@@ -6,7 +6,14 @@
 
 ## 1. 项目一句话定位
 
-以 **ESP32-S3-DevKitC-1** 为核心的端侧控制节点，通过硬件抽象层 (HAL) 管理传感器与执行器，具备 WiFi + MQTT 能力（当前为本地模式）。
+以 **ESP32-S3-DevKitC-1** 为核心的本地交互节点。当前固件主路径是：
+
+- `EC11` 旋转输入
+- `event_broker` 广播
+- `servo/rgb/lvgl` 各自消费
+- `SG90 + WS2812 + GC9A01` 独立响应
+
+网络层代码保留在仓库中，但当前默认固件不启用。
 
 ---
 
@@ -16,6 +23,7 @@
 - **框架**：ESP-IDF v6.0
 - **串口**：`/dev/ttyACM0`
 - **烧录方式**：在项目根目录运行 `./flash.sh`
+- **ESP-IDF 本地路径**：`/home/mikurubeam/.espressif/v6.0/esp-idf`
 
 ---
 
@@ -39,7 +47,7 @@
 ## 4. 项目结构与关键文件
 
 ```
-/home/byd/Desktop/espattack/
+/home/mikurubeam/Desktop/espattack/
 ├── CMakeLists.txt
 ├── sdkconfig
 ├── flash.sh                    # 编译烧录脚本
@@ -62,7 +70,8 @@
         ├── hal_servo.h/.c      # SG90 舵机，GPIO4，LEDC 50Hz
         ├── hal_rgb.h/.c        # WS2812，GPIO48，RMT 驱动
         ├── hal_ec11.h/.c       # EC11 编码器，GPIO5/6/7，轮询+ISR
-        └── hal_gc9a01.h/.c     # GC9A01 1.28" 圆形 SPI LCD，直接 SPI
+        ├── hal_gc9a01.h/.c     # GC9A01 1.28" 圆形 SPI LCD，直接 SPI
+        └── hal_buzzer.h/.c     # 蜂鸣器（代码保留，默认未接入主流程）
 ```
 
 ---
@@ -133,50 +142,45 @@ control/*.json  →  gen_config.py  →  main/app_config.h  →  main.c 编译
 
 ## 5. 当前状态与最近改动
 
-### v0.7 架构（2026-04-17）：事件总线 + 私有队列
+### 当前稳定架构（2026-04-24）
 
 EC11 作为唯一输入源，通过 `event_broker` 发布事件；`consumer_task` 将事件转换为 `angle_msg_t` 后广播到 3 个**私有队列**，各任务独立运行互不阻塞：
 
 ```
 ec11_reader (优先级 12) ──发布──→ event_broker ──→ consumer_task (18)
                                                           │
-                          ├─→ s_servo_queue  → servo_task (15) → 舵机 lerp 1°/10ms
+                          ├─→ s_servo_queue  → servo_task (15) → 只保留最新目标 + 自适应步进
                           ├─→ s_rgb_queue    → rgb_task (14)   → 颜色直接跳变
-                          └─→ s_lvgl_queue   → lvgl_task (5)   → EC11 按键触发图片旋转 90 度
+                          └─→ s_lvgl_queue   → lvgl_task (5)   → EC11 按键切换图片
 ```
 
 ### 已验证功能
 - ✅ SG90 舵机 0°~180° 正常，EC11 限位 0°/180° 阻断
 - ✅ EC11 编码器旋转 + 按键正常（步进 **2°/格**，可通过 `control/encoder.json` 修改）
 - ✅ WS2812 RGB LED 正常，颜色直接跟随角度跳变（无渐变）
-- ✅ GC9A01 1.28" 圆形 LCD 正常，EC11 按键触发图片旋转 90 度
+- ✅ GC9A01 1.28" 圆形 LCD 正常，EC11 按键可切换表情图片
 
 ### EC11 架构说明
-- **旋转检测**：`ec11_reader_task` 以 10ms 周期轮询 CLK/DT 电平，通过下降沿判断方向和步进。完全在任务上下文执行，无需担心 ISR 阻塞问题。
+- **旋转检测**：`ec11_reader_task` 以 `2ms` 周期轮询 CLK/DT 电平，通过 `CLK` 下降沿判断方向和步进。完全在任务上下文执行，无需担心 ISR 阻塞问题。
 - **按键检测**：SW 使用 GPIO 下降沿中断 + 200ms 消抖，ISR 内直接调用 `event_broker_broadcast`，不调用任何阻塞 API。
 - **`consumer_task`**（优先级 18）订阅事件总线，收到事件后立即计算 servo_target 和 RGB 颜色，广播到 3 个私有队列。
 
 ### 最近修改记录
-1. **v0.7 事件总线 + 私有队列**：引入 `event_broker.c/h`，`consumer_task` 广播到 3 个私有队列，彻底修复共享队列竞态。
-2. **EC11 GPIO 修复**：CLK/DT/SW 改回正确的 GPIO 5/6/7。
-3. **EC11 轮询修复**：`EC11_POLL_MS` 10ms，优先级 12，修复 `vTaskDelay(0)` CPU 饿死。
-4. **GC9A01 竞态修复**：`lvgl_task` 在 `hal_gc9a01_spi_test()` 之后启动；`hal_gc9a01_init()` 每次调用都硬复位+清屏。
-5. **LVGL 旋转中心**：图片设置 `transform_pivot_x/y = 120`（图片中心 240x240），绕中心旋转。
-6. **LVGL tick 修复**：`lvgl_task` 循环中添加 `lv_tick_inc(10)`，解决图片不旋转问题。
-7. **GC9A01 颜色修复 v1**：移除 `lvgl_flush_cb` 中的 `lv_draw_sw_rgb565_swap`（对 LE 无实际作用），在 HAL 层实现 RGB565→BGR565 位交换。
-8. **EC11 限位**：0°/180° 限位阻断，反方向旋转解除。
-9. **RGB 响应**：移除渐变，EC11 转动时颜色直接跳变。
-10. **颜色映射修复**：90° 正确为蓝色 `(0,0,255)`。
-11. **GC9A01 旋转改为按键触发**：EC11 按下时图片旋转 90 度，不再随角度连续旋转。
-12. **GC9A01 颜色修复 v2**：在 HAL 层同时实现 BGR565 位交换 + 字节交换（ESP32 小端字节序补偿），纯色测试红-蓝-绿完全正确。
-13. **EC11 旋转角度溢出修复**：`img_angle` 取模 3600，防止 `int16_t` 溢出导致旋转失效。
+1. **舵机初始化修复**：`hal_servo_init()` 在完成初始化后立即下发默认角度，避免上电后中位不稳定。
+2. **启动顺序修复**：`servo/rgb` 先初始化，`GC9A01` 初始化完成后再启动 `lvgl_task`，最后才启动 `EC11`。
+3. **EC11 轮询优化**：`EC11_POLL_MS` 从历史上的 `10ms` 下调到 `2ms`，降低快速旋转时漏脉冲概率。
+4. **舵机队列优化**：`s_servo_queue` 改为单槽覆盖队列，任务只保留最新目标值。
+5. **舵机平滑优化**：由固定 `1°/10ms` 改为按误差自适应步进。
+6. **显示队列优化**：`s_lvgl_queue` 同样改为覆盖队列，按键切图不会被旧旋转消息淹没。
+7. **事件丢弃可观测**：`event_broker` 为队列满场景补充告警日志。
+8. **GC9A01 启动修复**：默认关闭启动期 `spi_test`，避免 bring-up 测试影响正式显示任务。
 
 ---
 
 ## 6. 如何编译与烧录
 
 ```bash
-cd /home/byd/Desktop/espattack
+cd /home/mikurubeam/Desktop/espattack
 ./flash.sh          # build + flash + monitor
 ./flash.sh build    # 仅编译
 ./flash.sh monitor  # 仅串口监控
@@ -196,7 +200,8 @@ cd /home/byd/Desktop/espattack
 
 ### GC9A01 调试提示
 - 初始化使用 Bodmer TFT_eSPI 序列，`hal_gc9a01_init()` 每次调用都会执行硬复位+初始化+清屏，确保 LVGL 接管时状态干净。
-- `lvgl_task` 必须在 `hal_gc9a01_spi_test()` **之后**启动，否则 SPI 测试和 LVGL flush 会竞态，导致屏幕状态错乱。
+- 正常运行默认**不执行** `hal_gc9a01_spi_test()`；只有做底层 bring-up 时才临时打开 `APP_RUN_GC9A01_SPI_TEST`。
+- 当前稳定启动顺序是：`event_broker` → `servo/rgb` → `consumer/servo/rgb task` → `hal_gc9a01_init()` → `lvgl_task` → `hal_ec11_init()`。
 - MADCTL=0x00 设置标准 RGB 模式。
 - **RGB565 字节序修复**：颜色修正在 `hal_gc9a01_draw_bitmap()` 内部实现（BGR565 位交换 + 字节交换），`lvgl_flush_cb` 无需额外处理。
 - **LVGL 心跳**：`lvgl_task` 循环中必须每周期调用 `lv_tick_inc(10)`，否则 `lv_timer_handler()` 永远不会触发重绘。
@@ -210,10 +215,12 @@ cd /home/byd/Desktop/espattack
 
 ---
 
-## 8. 快速联系人机接口
+## 8. 当前交互定义
 
-- **用户当前关注点**：EC11 按键触发 GC9A01 图片旋转 90 度；所有模块响应顺畅无延迟。
-- **已知问题**：无重大未解决问题。
+- **EC11 旋转**：更新逻辑角度，驱动 SG90 与 RGB 同步变化。
+- **EC11 按下**：逻辑角度复位到 `CFG_ENCODER_RESET`，同时 GC9A01 切换下一张图片。
+- **默认显示模式**：`images_display_2`，循环显示 4 张表情图。
+- **已知问题**：无阻塞级问题；若快速旋转仍偶发丢步，优先检查机械编码器本体与供电噪声。
 
 *文档维护者：AI Agent + 人类开发者*  
-*最后一次更新：2026-04-21*
+*最后一次更新：2026-04-24*

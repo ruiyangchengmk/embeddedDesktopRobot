@@ -1,9 +1,11 @@
 /**
  * hal_ec11.c — EC11 编码器抽象层
  *
- * 轮询方式：FreeRTOS 任务每 5ms 读取 CLK/DT 电平，
- * 通过电平变化判断旋转方向和速度。
- * 按键：GPIO 下降沿中断 + 200ms 消抖。
+ * 当前实现拆成两条路径：
+ *   1. 旋转：FreeRTOS 任务以 2ms 周期轮询 CLK/DT，避免把机械抖动和方向判断塞进 ISR。
+ *   2. 按键：GPIO 下降沿中断 + 200ms 消抖，只负责广播点击事件。
+ *
+ * 这样做的目标是让 EC11 在快速旋转时也尽量稳定，同时避免 ISR 中出现阻塞调用。
  */
 
 #include "hal_ec11.h"
@@ -20,7 +22,7 @@
 #define EC11_CLK_GPIO        5
 #define EC11_DT_GPIO         6
 #define EC11_SW_GPIO         7
-#define EC11_POLL_MS         10
+#define EC11_POLL_MS         2
 #define EC11_SW_DEBOUNCE_US 200000
 
 static const char *TAG = "HAL_EC11";
@@ -33,7 +35,7 @@ static volatile bool s_initialized = false;
 static TaskHandle_t s_reader_task_handle = NULL;
 
 // ================================================================
-// 轮询任务 — 替代 ISR 旋转检测
+// 轮询任务：负责旋转检测，不在 ISR 中做方向判定。
 // ================================================================
 
 static void ec11_reader_task(void *arg)
@@ -66,7 +68,7 @@ static void ec11_reader_task(void *arg)
             }
             portEXIT_CRITICAL(&s_lock);
 
-            // 发布事件（在任务上下文，非 ISR）
+            // 在任务上下文中发布旋转事件。
             event_broker_publish(EVENT_TYPE_ENCODER_ROTATE, s_angle);
         }
 
@@ -76,7 +78,7 @@ static void ec11_reader_task(void *arg)
 }
 
 // ================================================================
-// 按键中断 + 消抖
+// 按键中断 + 消抖：只发事件，不做耗时控制逻辑。
 // ================================================================
 
 static void IRAM_ATTR ec11_sw_isr_handler(void *arg)

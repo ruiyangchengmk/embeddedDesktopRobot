@@ -2,7 +2,7 @@
  * event_broker.c — 轻量级本地事件总线（替代 UDP 广播）
  *
  * 基于 FreeRTOS Queue 的发布-订阅模型。
- * 支持事件类型订阅、100Hz 节流（10ms 最小发布间隔）。
+ * 支持事件类型订阅，以及轻量节流避免抖动风暴。
  */
 
 #include "freertos/FreeRTOS.h"
@@ -33,6 +33,7 @@ static subscriber_t s_subscribers[MAX_SUBSCRIBERS];
 static int s_subscriber_count = 0;
 static QueueHandle_t s_broker_queue = NULL;
 static int64_t s_last_publish_us[16] = {0};  // 按 event_type 索引
+static int64_t s_last_drop_log_us = 0;
 static bool s_initialized = false;
 
 // ================================================================
@@ -44,7 +45,7 @@ static bool should_throttle(event_type_t type)
     int64_t now = esp_timer_get_time();
     int idx = (int)type;
     if (idx < 0 || idx >= 16) return true;
-    if (now - s_last_publish_us[idx] < 1000) {  // 1ms = 1000Hz, allow all ec11 events
+    if (now - s_last_publish_us[idx] < 1000) {  // 1ms guard to filter extreme bounce
         return true;
     }
     s_last_publish_us[idx] = now;
@@ -56,6 +57,13 @@ static void broadcast_event(broker_event_t *ev)
     for (int i = 0; i < s_subscriber_count; i++) {
         if (s_subscribers[i].type == ev->type || s_subscribers[i].type == EVENT_TYPE_ALL) {
             BaseType_t sent = xQueueSend(s_subscribers[i].queue, ev, 0);
+            if (sent != pdTRUE) {
+                int64_t now = esp_timer_get_time();
+                if ((now - s_last_drop_log_us) >= 500000) {
+                    ESP_LOGW(TAG, "Drop event type=%d for subscriber=%d", ev->type, i);
+                    s_last_drop_log_us = now;
+                }
+            }
             (void)sent;
         }
     }

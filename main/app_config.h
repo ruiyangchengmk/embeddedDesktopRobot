@@ -40,9 +40,10 @@ static const rgb_keyframe_t s_rgb_keyframes[CFG_RGB_KEYFRAME_COUNT] = {
 };
 
 /* ---- Display Mode ---- */
-#define CFG_DISPLAY_MODE_STRING "clockDisplay"
+#define CFG_DISPLAY_MODE_STRING "images_display_2"
 #define CFG_MODE_IMAGES_DISPLAY_1 0
-#define CFG_MODE_CLOCK_DISPLAY    1
+#define CFG_MODE_IMAGES_DISPLAY_2 1
+#define CFG_MODE_CLOCK_DISPLAY    0
 #define CFG_CLOCK_SHOW_DATE       1
 #define CFG_CLOCK_SHOW_TIME       1
 #define CFG_CLOCK_UPDATE_MS       1000
@@ -55,8 +56,8 @@ static const rgb_keyframe_t s_rgb_keyframes[CFG_RGB_KEYFRAME_COUNT] = {
 /* ---- Build Timestamp (host PC time when flashed) ---- */
 #define CFG_BUILD_YEAR  2026
 #define CFG_BUILD_MONTH 4
-#define CFG_BUILD_DAY   22
-#define CFG_BUILD_HOUR  9
-#define CFG_BUILD_MIN   18
+#define CFG_BUILD_DAY   24
+#define CFG_BUILD_HOUR  16
+#define CFG_BUILD_MIN   21
 
 #endif /* APP_CONFIG_H */

@@ -14,6 +14,31 @@
 | v0.8 | 2026-04-21 | GC9A01 颜色修复 v2（BGR位交换+字节交换）；EC11 旋转角度取模防溢出；移除 LCD1602；EC11 按键触发 GC9A01 图片旋转 90° |
 | v0.9 | 2026-04-22 | 时钟显示模式：lvgl_clock（lv_scale 实现模拟时钟）、hal_clock（编译时刻作起始时间）；EC11 切换数字/指针模式、旋转切换内容 |
 | v0.10 | 2026-04-23 | EC11 按键触发 GPIO3 无源蜂鸣器播放 hello world 旋律；独立 buzzer_task 非阻塞播放；支持后续 MAX98357 I2S DAC 升级为语音播报 |
+| v0.11 | 2026-04-24 | EC11→SG90 稳定性修复：舵机初始化时序修正、EC11 轮询 2ms、覆盖队列 + 自适应步进；GC9A01 启动链路与按键切图恢复 |
+
+---
+
+## 0.11 更新摘要（2026-04-24）
+
+这一版主要围绕两条链路做收敛：
+
+1. **EC11 → SG90**
+   - 修复 `hal_servo_init()` 中默认角度未真正下发的问题。
+   - 将 EC11 旋转轮询从 `10ms` 调整到 `2ms`，降低快速旋转时漏脉冲概率。
+   - `servo_task` 改为只保留最新目标值，并按误差自适应步进，减少“追不上目标”的滞后感。
+
+2. **EC11 按键 → GC9A01**
+   - `s_lvgl_queue` 改为单槽覆盖队列，避免按键切图事件被旧旋转消息挤掉。
+   - 正常运行默认关闭 `hal_gc9a01_spi_test()`，避免 bring-up 测试影响 LVGL 正常启动。
+   - 启动顺序调整为：`servo/rgb` 初始化与任务先完成，`GC9A01` 初始化后再拉起 `lvgl_task`，最后才启动 `EC11`。
+
+3. **日志与可观测性**
+   - `event_broker` 为事件丢弃增加告警日志，后续定位队列拥堵更直接。
+   - `consumer_task` 与 `lvgl_task` 日志节流，减少 monitor 噪声。
+
+说明：
+- 蜂鸣器代码仍在仓库中，但当前默认主流程未启用。
+- 当前本地稳定模式以 `images_display_2` 为主，EC11 按键切换 4 张表情图。
 
 ---
 
@@ -51,7 +76,7 @@
 - **实现要点**：
   - ESP32-S3 的 LEDC 最大支持 **14-bit** 分辨率，不可使用 16-bit。
   - 50Hz 频率，周期 20ms。
-  - 脉宽映射：0°=0.5ms, 90°=1.5ms, 180°=2.5ms。
+  - 脉宽映射：0°=0.5ms, 90°=1.5ms, 180°=2.4ms（当前版本采用更保守范围）。
   - 依赖组件：`esp_driver_ledc`。
 - **状态**：✅ 验证通过，0°~180° 扫掠正常。
 
@@ -271,7 +296,7 @@ INIT → WIFI_CONNECTING → MQTT_CONNECTING → RUNNING → (DISCONNECTED → R
 ### 4.1 项目文件树
 
 ```
-/home/byd/Desktop/espattack/
+/home/mikurubeam/Desktop/espattack/
 ├── CMakeLists.txt              # 顶层 CMake
 ├── sdkconfig                   # ESP-IDF 芯片配置
 ├── flash.sh                    # 编译烧录脚本（内含 gen_config.py 调用）
@@ -321,7 +346,7 @@ INIT → WIFI_CONNECTING → MQTT_CONNECTING → RUNNING → (DISCONNECTED → R
 
 #### 第一次（HAL 层重构完成）
 - **时间**：2026-04-13
-- **命令**：`export IDF_PATH=/home/byd/.espressif/v6.0/esp-idf && cd build && ninja all`
+- **命令**：`export IDF_PATH=/home/mikurubeam/.espressif/v6.0/esp-idf && cd build && ninja all`
 - **结果**：✅ 编译成功，`blink.bin` 大小 `0x331d0` bytes (约 205 KB)，占 app 分区 20%。
 
 #### 第二次（Phase 1: WiFi + MQTT 接入后）
@@ -413,7 +438,7 @@ idf_component_register(SRCS ${SOURCES}
 
 - **外部组件**：当前 ESP-IDF v6.0 未默认集成 `esp-mqtt`，项目通过以下命令拉取了官方库：
   ```bash
-  cd /home/byd/Desktop/espattack/components
+  cd /home/mikurubeam/Desktop/espattack/components
   git clone --depth 1 https://github.com/espressif/esp-mqtt.git
   ```
 - **Topic 设计**：

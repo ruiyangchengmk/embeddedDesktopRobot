@@ -1,15 +1,21 @@
 /**
- * main.c — ESP32-S3 端侧控制节点 (v0.7-fix)
+ * main.c — ESP32-S3 本地交互控制节点
  *
- * 架构：EC11 GPIO 轮询 → 事件总线 → 各消费者独立任务
- * 原则：单一硬件变更不影响其他硬件；分层架构最小修改。
+ * 当前稳定主链路：
+ *   EC11 轮询/按键 -> event_broker -> consumer_task ->
+ *   servo_task / rgb_task / lvgl_task
  *
- * 任务优先级（从高到低）：
- *   ec11_reader  12  — GPIO 轮询任务，发布旋转/按键事件
- *   consumer     18  — 事件总线消费者，转换为 angle_msg 并广播到各队列
- *   servo_task   15  — 舵机：消费角度，做平滑 lerp
- *   rgb_task     14  — RGB：消费角度，实时更新颜色
- *   lvgl_task     5  — 显示：图片旋转 或 时钟（由 modeSelect.json 控制）
+ * 启动顺序：
+ *   1. 创建私有队列并初始化 event_broker
+ *   2. 初始化 servo/rgb
+ *   3. 启动 consumer/servo/rgb 任务
+ *   4. 初始化 GC9A01 并启动 lvgl_task
+ *   5. 最后启动 EC11，避免显示链路尚未就绪时就有输入打入
+ *
+ * 设计原则：
+ *   - 单一硬件故障或调试不应拖垮其他外设
+ *   - 每个消费者只处理自己关心的输出
+ *   - 快速输入场景优先保留“最新目标值”
  */
 
 #include <stdio.h>
@@ -25,7 +31,6 @@
 #include "hal/hal_rgb.h"
 #include "hal/hal_ec11.h"
 #include "hal/hal_gc9a01.h"
-#include "hal/hal_buzzer.h"
 #if CFG_MODE_CLOCK_DISPLAY
 #include "hal/hal_clock.h"
 #include "lvgl_clock.h"
@@ -36,6 +41,7 @@
 #include "lvgl/src/draw/sw/lv_draw_sw.h"
 
 static const char *TAG = "APP";
+#define APP_RUN_GC9A01_SPI_TEST 0
 
 // ================================================================
 // 消费者私有队列（每个任务独立，避免互斥竞争）
@@ -44,6 +50,7 @@ static QueueHandle_t s_servo_queue = NULL;
 static QueueHandle_t s_rgb_queue = NULL;
 static QueueHandle_t s_lvgl_queue = NULL;
 static QueueHandle_t s_consumer_queue = NULL;
+static int64_t s_last_consumer_log_us = 0;
 
 // 消费者消息格式
 typedef struct {
@@ -52,6 +59,16 @@ typedef struct {
     uint8_t r, g, b;   // 对应 RGB 颜色
     int button;         // 1=按键按下，0=正常旋转
 } angle_msg_t;
+
+static void send_servo_msg(const angle_msg_t *msg)
+{
+    xQueueOverwrite(s_servo_queue, msg);
+}
+
+static void send_lvgl_msg(const angle_msg_t *msg)
+{
+    xQueueOverwrite(s_lvgl_queue, msg);
+}
 
 // ================================================================
 // 辅助函数
@@ -111,17 +128,21 @@ static void consumer_task(void *arg)
         color_from_angle(msg.servo_target, &msg.r, &msg.g, &msg.b);
 
         // 广播给所有消费者（各自私有队列）
-        xQueueSend(s_servo_queue, &msg, 0);
+        send_servo_msg(&msg);
         xQueueSend(s_rgb_queue, &msg, 0);
-        xQueueSend(s_lvgl_queue, &msg, 0);
+        send_lvgl_msg(&msg);
 
-        ESP_LOGI(TAG, "Angle: ec11=%d servo=%d RGB(%u,%u,%u)",
-                 msg.angle, msg.servo_target, msg.r, msg.g, msg.b);
+        int64_t now_us = esp_timer_get_time();
+        if (msg.button || (now_us - s_last_consumer_log_us) >= 200000) {
+            ESP_LOGI(TAG, "Angle: ec11=%d servo=%d RGB(%u,%u,%u)",
+                     msg.angle, msg.servo_target, msg.r, msg.g, msg.b);
+            s_last_consumer_log_us = now_us;
+        }
     }
 }
 
 // ================================================================
-// 消费者1：舵机平滑 lerp
+// 消费者1：舵机平滑跟随
 // ================================================================
 static void servo_task(void *arg)
 {
@@ -133,6 +154,9 @@ static void servo_task(void *arg)
     while (1) {
         angle_msg_t msg;
         if (xQueueReceive(s_servo_queue, &msg, 0) == pdTRUE) {
+            while (xQueueReceive(s_servo_queue, &msg, 0) == pdTRUE) {
+                // 清空积压消息，只保留最新目标值。
+            }
             if (msg.button) {
                 target = CFG_SERVO_INITIAL;
                 current = CFG_SERVO_INITIAL;
@@ -143,10 +167,19 @@ static void servo_task(void *arg)
             }
         }
 
-        if (current < target) {
-            current++;
-        } else if (current > target) {
-            current--;
+        int diff = target - current;
+        int step = 0;
+        if (diff > 0) {
+            step = (diff > 30) ? 4 : (diff > 10 ? 2 : 1);
+        } else if (diff < 0) {
+            step = (diff < -30) ? -4 : (diff < -10 ? -2 : -1);
+        }
+
+        if (step != 0) {
+            current += step;
+            if ((step > 0 && current > target) || (step < 0 && current < target)) {
+                current = target;
+            }
         }
         hal_servo_set_angle(current);
         vTaskDelay(pdMS_TO_TICKS(10));
@@ -172,7 +205,7 @@ static void rgb_task(void *arg)
 }
 
 // ================================================================
-// 消费者3：GC9A01 显示（图片旋转 或 时钟）
+// 消费者3：GC9A01 显示（图片模式或时钟模式）
 // ================================================================
 static lv_obj_t *s_gc_image = NULL;
 #if CFG_MODE_CLOCK_DISPLAY
@@ -225,17 +258,17 @@ static void lvgl_task(void *arg)
     lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
 
 #if CFG_MODE_IMAGES_DISPLAY_1
-    // 显示自定义图片（240x240，居中铺满）
+    // 模式1：显示单张图片，按键时旋转。
     s_gc_image = lv_image_create(scr);
     lv_image_set_src(s_gc_image, &resized_image);
     lv_obj_align(s_gc_image, LV_ALIGN_CENTER, 0, 0);
-    // 设置旋转中心为图片中心
+    // 旋转中心设为图片中心。
     lv_obj_set_style_transform_pivot_x(s_gc_image, 120, 0);
     lv_obj_set_style_transform_pivot_y(s_gc_image, 120, 0);
 #endif
 
 #if CFG_MODE_IMAGES_DISPLAY_2
-    // 显示表情包图片（240x240，EC11按键切换）
+    // 模式2：显示 4 张表情图，EC11 按键切换。
     s_gc_image = lv_image_create(scr);
     lv_image_set_src(s_gc_image, &emotion1);
     lv_obj_align(s_gc_image, LV_ALIGN_CENTER, 0, 0);
@@ -249,7 +282,7 @@ static void lvgl_task(void *arg)
 
     int lvgl_loop_cnt = 0;
 #if CFG_MODE_IMAGES_DISPLAY_1
-    int img_angle = 0;  // cumulative rotation angle in decidegrees
+    int img_angle = 0;  // 累积旋转角，单位 0.1 度
 #endif
 #if CFG_MODE_IMAGES_DISPLAY_2
     int s_emotion_idx = 0;
@@ -262,8 +295,7 @@ static void lvgl_task(void *arg)
         if (xQueueReceive(s_lvgl_queue, &msg, pdMS_TO_TICKS(10)) == pdTRUE) {
 #if CFG_MODE_IMAGES_DISPLAY_1 && CFG_MODE_CLOCK_DISPLAY
             if (msg.button == 1) {
-                hal_buzzer_play_hello_world();
-                // Both modes active: button toggles display mode
+                // 两种模式同时编译时：按键优先切换显示行为。
                 if (lvgl_clock_is_active()) {
                     lvgl_clock_set_mode(
                         lvgl_clock_get_mode() == CLOCK_DIGITAL ? CLOCK_ANALOG : CLOCK_DIGITAL);
@@ -274,17 +306,16 @@ static void lvgl_task(void *arg)
                     changed = true;
                 }
             } else {
-                // EC11 rotation: in clock mode cycles content
+                // 时钟模式下，旋转编码器切换显示内容。
                 if (lvgl_clock_is_active()) {
                     lvgl_clock_next_content();
                 }
             }
 #elif CFG_MODE_IMAGES_DISPLAY_1
             if (msg.button == 1) {
-                hal_buzzer_play_hello_world();
-                /* EC11 button pressed: rotate image 90 degrees */
-                img_angle += 900;         // 90 degrees = 900 decidegrees
-                img_angle %= 3600;         // keep within one rotation
+                // 按键旋转图片 90 度。
+                img_angle += 900;
+                img_angle %= 3600;
                 lv_obj_set_style_transform_rotation(s_gc_image,
                                                     (int16_t)img_angle, 0);
                 changed = true;
@@ -292,7 +323,6 @@ static void lvgl_task(void *arg)
             }
 #elif CFG_MODE_CLOCK_DISPLAY
             if (msg.button == 1) {
-                hal_buzzer_play_hello_world();
                 lvgl_clock_set_mode(
                     lvgl_clock_get_mode() == CLOCK_DIGITAL ? CLOCK_ANALOG : CLOCK_DIGITAL);
             } else {
@@ -300,8 +330,7 @@ static void lvgl_task(void *arg)
             }
 #elif CFG_MODE_IMAGES_DISPLAY_2
             if (msg.button == 1) {
-                hal_buzzer_play_hello_world();
-                // EC11 button: cycle through 4 emotion images
+                // 按键切换 4 张表情图。
                 static const void *emotion_images[4] = {&emotion1, &emotion2, &emotion3, &emotion4};
                 s_emotion_idx = (s_emotion_idx + 1) % 4;
                 lv_image_set_src(s_gc_image, emotion_images[s_emotion_idx]);
@@ -315,7 +344,7 @@ static void lvgl_task(void *arg)
             lv_obj_invalidate(lv_screen_active());
         }
 
-        // ---- Clock update (rate-limited) ----
+        // ---- 时钟刷新（限频）----
 #if CFG_MODE_CLOCK_DISPLAY
         if (lvgl_clock_is_active()) {
             int64_t now_us = esp_timer_get_time();
@@ -323,7 +352,7 @@ static void lvgl_task(void *arg)
             if (elapsed >= (int64_t)CFG_CLOCK_UPDATE_MS * 1000) {
                 lvgl_clock_update(false);
                 s_last_clock_update_us = now_us;
-                // Force LVGL to process invalidated areas immediately
+                // 立刻处理失效区域，避免时钟模式刷新感迟滞。
                 lv_timer_handler();
             }
         }
@@ -349,7 +378,7 @@ static void lvgl_task(void *arg)
             ESP_LOGW(TAG, "[lvgl] timer_handler returned 0, timers may be stuck!");
         }
         if (time_till_next > 100) {
-            time_till_next = 100;  // clamp unreasonably-large values
+            time_till_next = 100;  // 限制异常大的睡眠时间
         }
         lvgl_loop_cnt++;
         vTaskDelay(pdMS_TO_TICKS(time_till_next ? time_till_next : 1));
@@ -362,10 +391,10 @@ static void lvgl_task(void *arg)
 void app_main(void)
 {
     // ---- 第一步：创建所有队列（在任何任务启动前）----
-    s_servo_queue = xQueueCreate(10, sizeof(angle_msg_t));
+    s_servo_queue = xQueueCreate(1, sizeof(angle_msg_t));
     s_rgb_queue = xQueueCreate(10, sizeof(angle_msg_t));
-    s_lvgl_queue = xQueueCreate(10, sizeof(angle_msg_t));
-    s_consumer_queue = xQueueCreate(10, sizeof(broker_event_t));
+    s_lvgl_queue = xQueueCreate(1, sizeof(angle_msg_t));
+    s_consumer_queue = xQueueCreate(32, sizeof(broker_event_t));
 
     if (!s_servo_queue || !s_rgb_queue || !s_lvgl_queue || !s_consumer_queue) {
         ESP_LOGE(TAG, "Queue create failed");
@@ -377,21 +406,21 @@ void app_main(void)
     ESP_ERROR_CHECK(event_broker_subscribe(EVENT_TYPE_ENCODER_ROTATE, s_consumer_queue));
     ESP_ERROR_CHECK(event_broker_subscribe(EVENT_TYPE_ENCODER_CLICK, s_consumer_queue));
 
+    // ---- 先初始化不会主动产生日志风暴的 HAL ----
+    ESP_ERROR_CHECK(hal_servo_init() == HAL_OK ? ESP_OK : ESP_FAIL);
+    ESP_ERROR_CHECK(hal_rgb_init() == HAL_OK ? ESP_OK : ESP_FAIL);
+
     // ---- 启动消费者任务 ----
     xTaskCreatePinnedToCore(consumer_task, "consumer", 4096, NULL, 18, NULL, 0);
     xTaskCreatePinnedToCore(servo_task,   "servo",   4096, NULL, 15, NULL, 0);
     xTaskCreatePinnedToCore(rgb_task,     "rgb",     4096, NULL, 14, NULL, 0);
 
-    // ---- 初始化所有 HAL（任务已就绪，可接收事件）----
-    ESP_ERROR_CHECK(hal_ec11_init() == HAL_OK ? ESP_OK : ESP_FAIL);
-    ESP_ERROR_CHECK(hal_servo_init() == HAL_OK ? ESP_OK : ESP_FAIL);
-    ESP_ERROR_CHECK(hal_rgb_init() == HAL_OK ? ESP_OK : ESP_FAIL);
-    ESP_ERROR_CHECK(hal_buzzer_init() == HAL_BUZZER_OK ? HAL_BUZZER_OK : HAL_BUZZER_ERR);
-
-    // ---- GC9A01 SPI 测试 ----
+    // ---- 可选 SPI bring-up 测试；正常运行默认跳过，避免阻塞 LVGL 启动 ----
+#if APP_RUN_GC9A01_SPI_TEST
     ESP_LOGI(TAG, ">>> hal_gc9a01_spi_test()...");
     hal_gc9a01_spi_test();
     ESP_LOGI(TAG, ">>> hal_gc9a01_spi_test() done");
+#endif
 
     vTaskDelay(pdMS_TO_TICKS(1000));
 
@@ -403,6 +432,9 @@ void app_main(void)
 
     // ---- 启动 LVGL 任务（GC9A01 已初始化完毕，无竞态）----
     xTaskCreatePinnedToCore(lvgl_task,   "lvgl",    8192, NULL,  5, NULL, 1);
+
+    // ---- 最后启动 EC11，让显示链路先完全就绪 ----
+    ESP_ERROR_CHECK(hal_ec11_init() == HAL_OK ? ESP_OK : ESP_FAIL);
 
     ESP_LOGI(TAG, "System initialized");
 }
