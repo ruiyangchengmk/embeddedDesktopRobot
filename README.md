@@ -12,6 +12,7 @@
 
 | 模块 | 信号 | GPIO |
 |------|------|------|
+| 无源蜂鸣器 | PWM | GPIO3 |
 | SG90 舵机 | PWM | GPIO4 |
 | EC11 编码器 | CLK | GPIO5 |
 | EC11 编码器 | DT | GPIO6 |

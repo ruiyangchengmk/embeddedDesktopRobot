@@ -25,6 +25,7 @@
 #include "hal/hal_rgb.h"
 #include "hal/hal_ec11.h"
 #include "hal/hal_gc9a01.h"
+#include "hal/hal_buzzer.h"
 #if CFG_MODE_CLOCK_DISPLAY
 #include "hal/hal_clock.h"
 #include "lvgl_clock.h"
@@ -261,6 +262,7 @@ static void lvgl_task(void *arg)
         if (xQueueReceive(s_lvgl_queue, &msg, pdMS_TO_TICKS(10)) == pdTRUE) {
 #if CFG_MODE_IMAGES_DISPLAY_1 && CFG_MODE_CLOCK_DISPLAY
             if (msg.button == 1) {
+                hal_buzzer_play_hello_world();
                 // Both modes active: button toggles display mode
                 if (lvgl_clock_is_active()) {
                     lvgl_clock_set_mode(
@@ -279,6 +281,7 @@ static void lvgl_task(void *arg)
             }
 #elif CFG_MODE_IMAGES_DISPLAY_1
             if (msg.button == 1) {
+                hal_buzzer_play_hello_world();
                 /* EC11 button pressed: rotate image 90 degrees */
                 img_angle += 900;         // 90 degrees = 900 decidegrees
                 img_angle %= 3600;         // keep within one rotation
@@ -289,6 +292,7 @@ static void lvgl_task(void *arg)
             }
 #elif CFG_MODE_CLOCK_DISPLAY
             if (msg.button == 1) {
+                hal_buzzer_play_hello_world();
                 lvgl_clock_set_mode(
                     lvgl_clock_get_mode() == CLOCK_DIGITAL ? CLOCK_ANALOG : CLOCK_DIGITAL);
             } else {
@@ -296,6 +300,7 @@ static void lvgl_task(void *arg)
             }
 #elif CFG_MODE_IMAGES_DISPLAY_2
             if (msg.button == 1) {
+                hal_buzzer_play_hello_world();
                 // EC11 button: cycle through 4 emotion images
                 static const void *emotion_images[4] = {&emotion1, &emotion2, &emotion3, &emotion4};
                 s_emotion_idx = (s_emotion_idx + 1) % 4;
@@ -381,6 +386,7 @@ void app_main(void)
     ESP_ERROR_CHECK(hal_ec11_init() == HAL_OK ? ESP_OK : ESP_FAIL);
     ESP_ERROR_CHECK(hal_servo_init() == HAL_OK ? ESP_OK : ESP_FAIL);
     ESP_ERROR_CHECK(hal_rgb_init() == HAL_OK ? ESP_OK : ESP_FAIL);
+    ESP_ERROR_CHECK(hal_buzzer_init() == HAL_BUZZER_OK ? HAL_BUZZER_OK : HAL_BUZZER_ERR);
 
     // ---- GC9A01 SPI 测试 ----
     ESP_LOGI(TAG, ">>> hal_gc9a01_spi_test()...");

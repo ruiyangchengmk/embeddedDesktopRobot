@@ -13,6 +13,7 @@
 | v0.7 | 2026-04-17 | 事件总线 + 私有队列；修复 EC11 GPIO 和 CPU 饿死；GC9A01 硬复位清屏修复 |
 | v0.8 | 2026-04-21 | GC9A01 颜色修复 v2（BGR位交换+字节交换）；EC11 旋转角度取模防溢出；移除 LCD1602；EC11 按键触发 GC9A01 图片旋转 90° |
 | v0.9 | 2026-04-22 | 时钟显示模式：lvgl_clock（lv_scale 实现模拟时钟）、hal_clock（编译时刻作起始时间）；EC11 切换数字/指针模式、旋转切换内容 |
+| v0.10 | 2026-04-23 | EC11 按键触发 GPIO3 无源蜂鸣器播放 hello world 旋律；独立 buzzer_task 非阻塞播放；支持后续 MAX98357 I2S DAC 升级为语音播报 |
 
 ---
 
@@ -467,6 +468,7 @@ idf_component_register(SRCS ${SOURCES}
 |------|------|
 | GPIO1 | GC9A01 DC（数据/命令切换） |
 | GPIO2 | GC9A01 RESX（复位，低有效） |
+| GPIO3 | 无源蜂鸣器 PWM（LEDC_CHANNEL_1，EC11 按键触发播放旋律） |
 | GPIO4 | SG90 舵机信号（PWM） |
 | GPIO5 | EC11 A相（CLK） |
 | GPIO6 | EC11 B相（DT） |
