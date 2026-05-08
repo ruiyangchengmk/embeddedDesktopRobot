@@ -31,6 +31,7 @@
 #include "hal/hal_rgb.h"
 #include "hal/hal_ec11.h"
 #include "hal/hal_gc9a01.h"
+#include "hal/hal_hcsr04.h"
 #if CFG_MODE_CLOCK_DISPLAY
 #include "hal/hal_clock.h"
 #include "lvgl_clock.h"
@@ -49,6 +50,7 @@ static const char *TAG = "APP";
 static QueueHandle_t s_servo_queue = NULL;
 static QueueHandle_t s_rgb_queue = NULL;
 static QueueHandle_t s_lvgl_queue = NULL;
+static QueueHandle_t s_hcsr04_queue = NULL;
 static QueueHandle_t s_consumer_queue = NULL;
 static int64_t s_last_consumer_log_us = 0;
 
@@ -205,9 +207,28 @@ static void rgb_task(void *arg)
 }
 
 // ================================================================
-// 消费者3：GC9A01 显示（图片模式或时钟模式）
+// 消费者3：HC-SR04 超声波测距（每 100ms 读取并广播）
+// ================================================================
+static void hcsr04_task(void *arg)
+{
+    ESP_ERROR_CHECK(hal_hcsr04_init() == HAL_OK ? ESP_OK : ESP_FAIL);
+    ESP_LOGI(TAG, "[hcsr04] task started on core %d", xPortGetCoreID());
+
+    while (1) {
+        float dist = hal_hcsr04_get_distance_cm();
+        if (dist >= 0) {
+            ESP_LOGI(TAG, "[hcsr04] distance=%.1f cm", dist);
+            event_broker_publish(EVENT_TYPE_HCSR04_DISTANCE, (int32_t)(dist * 100));
+        }
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
+}
+
+// ================================================================
+// 消费者4：GC9A01 显示（图片模式或时钟模式）
 // ================================================================
 static lv_obj_t *s_gc_image = NULL;
+static lv_obj_t *s_dist_label = NULL;
 #if CFG_MODE_CLOCK_DISPLAY
 static int64_t s_last_clock_update_us = 0;
 #endif
@@ -280,6 +301,15 @@ static void lvgl_task(void *arg)
     s_last_clock_update_us = esp_timer_get_time();
 #endif
 
+    // ---- 超声波距离标签（显示在屏幕底部，不被表情图覆盖）----
+    s_dist_label = lv_label_create(scr);
+    lv_label_set_text(s_dist_label, "Dist: -- cm");
+    lv_obj_align(s_dist_label, LV_ALIGN_TOP_MID, 0, 5);
+    lv_obj_set_style_text_font(s_dist_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_dist_label, lv_color_hex(0x00FFFF), 0);  // 青色
+    lv_obj_set_style_bg_color(s_dist_label, lv_color_black(), 0);  // 不透明黑底
+    lv_obj_set_style_bg_opa(s_dist_label, LV_OPA_COVER, 0);
+
     int lvgl_loop_cnt = 0;
 #if CFG_MODE_IMAGES_DISPLAY_1
     int img_angle = 0;  // 累积旋转角，单位 0.1 度
@@ -291,6 +321,19 @@ static void lvgl_task(void *arg)
     while (1) {
         angle_msg_t msg;
         bool changed = false;
+
+        // ---- 更新超声波距离标签 ----
+        broker_event_t dist_ev;
+        if (xQueueReceive(s_hcsr04_queue, &dist_ev, pdMS_TO_TICKS(100)) == pdTRUE) {
+            if (dist_ev.type == EVENT_TYPE_HCSR04_DISTANCE) {
+                float dist_cm = dist_ev.value / 100.0f;
+                static char dist_str[32];
+                snprintf(dist_str, sizeof(dist_str), "Dist: %.1f cm", dist_cm);
+                lv_label_set_text(s_dist_label, dist_str);
+                lv_obj_move_foreground(s_dist_label);
+                ESP_LOGI(TAG, "[lvgl] dist label updated: %s", dist_str);
+            }
+        }
 
         if (xQueueReceive(s_lvgl_queue, &msg, pdMS_TO_TICKS(10)) == pdTRUE) {
 #if CFG_MODE_IMAGES_DISPLAY_1 && CFG_MODE_CLOCK_DISPLAY
@@ -394,9 +437,10 @@ void app_main(void)
     s_servo_queue = xQueueCreate(1, sizeof(angle_msg_t));
     s_rgb_queue = xQueueCreate(10, sizeof(angle_msg_t));
     s_lvgl_queue = xQueueCreate(1, sizeof(angle_msg_t));
+    s_hcsr04_queue = xQueueCreate(16, sizeof(broker_event_t));
     s_consumer_queue = xQueueCreate(32, sizeof(broker_event_t));
 
-    if (!s_servo_queue || !s_rgb_queue || !s_lvgl_queue || !s_consumer_queue) {
+    if (!s_servo_queue || !s_rgb_queue || !s_lvgl_queue || !s_hcsr04_queue || !s_consumer_queue) {
         ESP_LOGE(TAG, "Queue create failed");
         return;
     }
@@ -405,6 +449,7 @@ void app_main(void)
     ESP_ERROR_CHECK(event_broker_init() == ESP_OK ? ESP_OK : ESP_FAIL);
     ESP_ERROR_CHECK(event_broker_subscribe(EVENT_TYPE_ENCODER_ROTATE, s_consumer_queue));
     ESP_ERROR_CHECK(event_broker_subscribe(EVENT_TYPE_ENCODER_CLICK, s_consumer_queue));
+    ESP_ERROR_CHECK(event_broker_subscribe(EVENT_TYPE_HCSR04_DISTANCE, s_hcsr04_queue));
 
     // ---- 先初始化不会主动产生日志风暴的 HAL ----
     ESP_ERROR_CHECK(hal_servo_init() == HAL_OK ? ESP_OK : ESP_FAIL);
@@ -414,6 +459,7 @@ void app_main(void)
     xTaskCreatePinnedToCore(consumer_task, "consumer", 4096, NULL, 18, NULL, 0);
     xTaskCreatePinnedToCore(servo_task,   "servo",   4096, NULL, 15, NULL, 0);
     xTaskCreatePinnedToCore(rgb_task,     "rgb",     4096, NULL, 14, NULL, 0);
+    xTaskCreatePinnedToCore(hcsr04_task,  "hcsr04",  2048, NULL, 10, NULL, 1);
 
     // ---- 可选 SPI bring-up 测试；正常运行默认跳过，避免阻塞 LVGL 启动 ----
 #if APP_RUN_GC9A01_SPI_TEST

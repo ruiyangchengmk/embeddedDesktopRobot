@@ -15,6 +15,32 @@
 | v0.9 | 2026-04-22 | 时钟显示模式：lvgl_clock（lv_scale 实现模拟时钟）、hal_clock（编译时刻作起始时间）；EC11 切换数字/指针模式、旋转切换内容 |
 | v0.10 | 2026-04-23 | EC11 按键触发 GPIO3 无源蜂鸣器播放 hello world 旋律；独立 buzzer_task 非阻塞播放；支持后续 MAX98357 I2S DAC 升级为语音播报 |
 | v0.11 | 2026-04-24 | EC11→SG90 稳定性修复：舵机初始化时序修正、EC11 轮询 2ms、覆盖队列 + 自适应步进；GC9A01 启动链路与按键切图恢复 |
+| v0.12 | 2026-05-08 | HC-SR04 超声波测距集成：新增 hal_hcsr04.h/.c，Trig=GPIO8/Echo=GPIO9；`hcsr04_task` 运行于 core 1（解决 SPI 总线争抢导致的饿死问题）；`EVENT_TYPE_HCSR04_DISTANCE` 通过 event_broker 广播；距离标签实时显示于 GC9A01 屏幕顶部中央（青色 + 黑底）；表情图模式还原为中心全尺寸。 |
+
+---
+
+## 0.12 更新摘要（2026-05-08）
+
+这一版主要添加 HC-SR04 超声波测距模块：
+
+1. **HC-SR04 驱动 (`hal_hcsr04.h/.c`)**
+   - Trig = GPIO8，Echo = GPIO9，使用 busy-wait 精确延时（`ets_delay_us`）
+   - 测量范围 2cm ~ 400cm，超时返回 -1
+   - 必须在 core 1 运行，避免与 GC9A01 SPI 总线争抢导致任务饿死
+
+2. **事件总线集成**
+   - 新增 `EVENT_TYPE_HCSR04_DISTANCE` 事件类型
+   - `hcsr04_task`（core 1，优先级 10，每 200ms）发布距离事件
+   - `s_hcsr04_queue`（深度 16）缓冲事件
+
+3. **屏幕显示**
+   - 距离标签位于屏幕顶部中央 (`LV_ALIGN_TOP_MID`)
+   - 青色文字 + 黑色不透明背景，不被表情图覆盖
+   - `lv_obj_invalidate()` 触发刷新，每秒更新多次
+
+4. **已知问题修复**
+   - **任务饿死**：hcsr04_task 在 core 0 会因 GC9A01 SPI 初始化期间被饿死；迁移到 core 1 后持续稳定运行 20+ 分钟无中断
+   - 表情图还原为中央全尺寸显示
 
 ---
 

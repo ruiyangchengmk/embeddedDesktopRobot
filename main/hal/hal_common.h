@@ -21,6 +21,7 @@ typedef enum {
     HAL_ERR_INVALID_ARG = -2,
     HAL_ERR_NO_MEM = -3,
     HAL_ERR_NOT_INIT = -4,
+    HAL_ERR_TIMEOUT = -5,
 } hal_err_t;
 
 #ifdef __cplusplus

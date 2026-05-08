@@ -363,7 +363,28 @@ for (int i = 0; i < w; i++) {
 | `xtensa-esp32s3-elf-gdb` | 调试崩溃日志 |
 | `spi_master_polling_test` | SPI 裸机测试 |
 | `gpio_get_level()` | 直接读取 GPIO 状态 |
+| `script -qf /tmp/log --command "..."` | 捕获无 TTY 环境的 monitor 输出到文件 |
 
 ---
 
-*最后更新：2026-04-21*
+## 11. HC-SR04 任务在 core 0 上饿死
+
+**问题描述**：HC-SR04 测量在烧录后几秒内完全停止，但日志显示 `hcsr04_task` 仍在运行。
+
+**根因分析**：`hcsr04_task` 原来运行在 **core 0**，与 GC9A01 SPI 总线共享同一核心。GC9A01 的 SPI 初始化 (`hal_gc9a01_init()`) 耗时约 350ms，期间 core 0 被 SPI polling 循环独占。`hcsr04_task` 每次 `vTaskDelay` 到期后都刚好撞上 SPI 占用窗口，反复被饿死。
+
+**日志证据**：任务在 core 0 时，`[hcsr04] distance=` 日志在 gc9a01_init 之后完全消失，`age=` 字段从 ~200ms 跳到远超 1 秒。
+
+**解决方案**：将 `hcsr04_task` 绑定到 **core 1**（`xTaskCreatePinnedToCore(..., 1)`），与 SPI 总线完全隔离，稳定运行 20+ 分钟无中断。
+
+**核心教训**：SPI/摄像头等高速外设的任务应固定到空闲 core，避免与时间敏感的传感器任务争抢。
+
+---
+
+## 12. LVGL `lv_obj_invalidate()` 导致串口超时
+
+**问题描述**：`lv_obj_invalidate(s_dist_label)` 触发全屏 LVGL 重绘，SPI 传输耗时过长，导致 `idf_monitor` 打印 `Writing to serial is timing out` 警告。
+
+**根因**：`lv_obj_invalidate()` 触发的重绘面积包含整个屏幕（240×240 像素，RGB565），SPI 带宽被长时间占用（约 57ms 传输时间），期间 UART 驱动无法及时写入数据。
+
+**解决方案**：不调用 `lv_obj_invalidate()`，依靠 LVGL 自身的心跳机制（`lv_timer_handler()` 定期检查 label 状态变化）。LVGL 内部会检测到 `lv_label_set_text()` 带来的状态变化并在下一个渲染周期自动重绘该区域。

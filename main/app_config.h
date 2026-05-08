@@ -55,9 +55,9 @@ static const rgb_keyframe_t s_rgb_keyframes[CFG_RGB_KEYFRAME_COUNT] = {
 
 /* ---- Build Timestamp (host PC time when flashed) ---- */
 #define CFG_BUILD_YEAR  2026
-#define CFG_BUILD_MONTH 4
-#define CFG_BUILD_DAY   24
-#define CFG_BUILD_HOUR  16
-#define CFG_BUILD_MIN   21
+#define CFG_BUILD_MONTH 5
+#define CFG_BUILD_DAY   8
+#define CFG_BUILD_HOUR  12
+#define CFG_BUILD_MIN   19
 
 #endif /* APP_CONFIG_H */

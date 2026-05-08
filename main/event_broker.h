@@ -15,8 +15,9 @@ extern "C" {
 typedef enum {
     EVENT_TYPE_ENCODER_ROTATE  = 0,
     EVENT_TYPE_ENCODER_CLICK   = 1,
-    EVENT_TYPE_MAX             = 16,
-    EVENT_TYPE_ALL             = 31,  // 订阅所有类型
+    EVENT_TYPE_HCSR04_DISTANCE = 2,
+    EVENT_TYPE_MAX            = 16,
+    EVENT_TYPE_ALL            = 31,  // 订阅所有类型
 } event_type_t;
 
 // ================================================================

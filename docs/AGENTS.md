@@ -10,8 +10,8 @@
 
 - `EC11` 旋转输入
 - `event_broker` 广播
-- `servo/rgb/lvgl` 各自消费
-- `SG90 + WS2812 + GC9A01` 独立响应
+- `servo/rgb/lvgl/hcsr04` 各自消费
+- `SG90 + WS2812 + GC9A01 + HC-SR04` 独立响应
 
 网络层代码保留在仓库中，但当前默认固件不启用。
 
@@ -41,6 +41,8 @@
 | GC9A01 SPI | MOSI | **GPIO11** | SPI 数据输出 |
 | GC9A01 SPI | CLK | **GPIO12** | SPI 时钟 |
 | WS2812 RGB | DIN | **GPIO48** | 板载 |
+| HC-SR04 超声波 | Trig (发送) | **GPIO8** | |
+| HC-SR04 超声波 | Echo (接收) | **GPIO9** | |
 
 ---
 
@@ -60,6 +62,8 @@
 ├── docs/
 │   ├── ARCHITECTURE.md         # 详细架构/接口/API 文档
 │   ├── PROJECT_LOG.md          # 过程日志与接线备忘
+│   ├── TUTORIAL.md             # 初学者教学文档
+│   ├── DEBUG_LOG.md            # 根因分析手册
 │   └── AGENTS.md               # 本文件
 └── main/
     ├── app_config.h           # 自动生成（由 gen_config.py 产出，勿手动修改）
@@ -71,6 +75,7 @@
         ├── hal_rgb.h/.c        # WS2812，GPIO48，RMT 驱动
         ├── hal_ec11.h/.c       # EC11 编码器，GPIO5/6/7，轮询+ISR
         ├── hal_gc9a01.h/.c     # GC9A01 1.28" 圆形 SPI LCD，直接 SPI
+        ├── hal_hcsr04.h/.c     # HC-SR04 超声波，GPIO8/9，busy-wait 定时
         └── hal_buzzer.h/.c     # 蜂鸣器（代码保留，默认未接入主流程）
 ```
 
@@ -142,7 +147,7 @@ control/*.json  →  gen_config.py  →  main/app_config.h  →  main.c 编译
 
 ## 5. 当前状态与最近改动
 
-### 当前稳定架构（2026-04-24）
+### 当前稳定架构（2026-05-08）
 
 EC11 作为唯一输入源，通过 `event_broker` 发布事件；`consumer_task` 将事件转换为 `angle_msg_t` 后广播到 3 个**私有队列**，各任务独立运行互不阻塞：
 
@@ -152,6 +157,8 @@ ec11_reader (优先级 12) ──发布──→ event_broker ──→ consumer
                           ├─→ s_servo_queue  → servo_task (15) → 只保留最新目标 + 自适应步进
                           ├─→ s_rgb_queue    → rgb_task (14)   → 颜色直接跳变
                           └─→ s_lvgl_queue   → lvgl_task (5)   → EC11 按键切换图片
+
+hcsr04_task (core 1, 优先级 10) ──→ event_broker(EVENT_TYPE_HCSR04_DISTANCE) ──→ s_hcsr04_queue ──→ lvgl_task → 距离标签
 ```
 
 ### 已验证功能
@@ -159,6 +166,7 @@ ec11_reader (优先级 12) ──发布──→ event_broker ──→ consumer
 - ✅ EC11 编码器旋转 + 按键正常（步进 **2°/格**，可通过 `control/encoder.json` 修改）
 - ✅ WS2812 RGB LED 正常，颜色直接跟随角度跳变（无渐变）
 - ✅ GC9A01 1.28" 圆形 LCD 正常，EC11 按键可切换表情图片
+- ✅ HC-SR04 超声波测距正常，5Hz 持续测量，屏幕顶部青色标签实时显示距离
 
 ### EC11 架构说明
 - **旋转检测**：`ec11_reader_task` 以 `2ms` 周期轮询 CLK/DT 电平，通过 `CLK` 下降沿判断方向和步进。完全在任务上下文执行，无需担心 ISR 阻塞问题。
@@ -174,6 +182,7 @@ ec11_reader (优先级 12) ──发布──→ event_broker ──→ consumer
 6. **显示队列优化**：`s_lvgl_queue` 同样改为覆盖队列，按键切图不会被旧旋转消息淹没。
 7. **事件丢弃可观测**：`event_broker` 为队列满场景补充告警日志。
 8. **GC9A01 启动修复**：默认关闭启动期 `spi_test`，避免 bring-up 测试影响正式显示任务。
+9. **HC-SR04 超声波测距集成**（2026-05-08）：`hal_hcsr04.h/.c`，Trig=GPIO8/Echo=GPIO9，busy-wait 精确定时；`hcsr04_task` 运行于 **core 1**（避免 SPI 总线争抢导致任务饿死）；`EVENT_TYPE_HCSR04_DISTANCE` 通过 event_broker 广播；距离标签显示于 GC9A01 屏幕顶部中央（青色 + 黑底）。
 
 ---
 
@@ -220,7 +229,8 @@ cd /home/mikurubeam/Desktop/espattack
 - **EC11 旋转**：更新逻辑角度，驱动 SG90 与 RGB 同步变化。
 - **EC11 按下**：逻辑角度复位到 `CFG_ENCODER_RESET`，同时 GC9A01 切换下一张图片。
 - **默认显示模式**：`images_display_2`，循环显示 4 张表情图。
+- **HC-SR04 测距**：持续在 core 1 运行，5Hz，屏幕顶部青色标签实时显示距离。
 - **已知问题**：无阻塞级问题；若快速旋转仍偶发丢步，优先检查机械编码器本体与供电噪声。
 
 *文档维护者：AI Agent + 人类开发者*  
-*最后一次更新：2026-04-24*
+*最后一次更新：2026-05-08*
