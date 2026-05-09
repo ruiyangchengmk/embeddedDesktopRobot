@@ -32,7 +32,7 @@ typedef struct {
 static subscriber_t s_subscribers[MAX_SUBSCRIBERS];
 static int s_subscriber_count = 0;
 static QueueHandle_t s_broker_queue = NULL;
-static int64_t s_last_publish_us[16] = {0};  // 按 event_type 索引
+static int64_t s_last_publish_us[EVENT_TYPE_MAX] = {0};  // 按 event_type 索引
 static int64_t s_last_drop_log_us = 0;
 static bool s_initialized = false;
 
@@ -44,7 +44,7 @@ static bool should_throttle(event_type_t type)
 {
     int64_t now = esp_timer_get_time();
     int idx = (int)type;
-    if (idx < 0 || idx >= 16) return true;
+    if (idx < 0 || idx >= EVENT_TYPE_MAX) return true;
     if (now - s_last_publish_us[idx] < 1000) {  // 1ms guard to filter extreme bounce
         return true;
     }
@@ -54,6 +54,17 @@ static bool should_throttle(event_type_t type)
 
 static void broadcast_event(broker_event_t *ev)
 {
+    if (s_broker_queue) {
+        BaseType_t sent = xQueueSend(s_broker_queue, ev, 0);
+        if (sent != pdTRUE) {
+            int64_t now = esp_timer_get_time();
+            if ((now - s_last_drop_log_us) >= 500000) {
+                ESP_LOGW(TAG, "Drop event type=%d for broker queue", ev->type);
+                s_last_drop_log_us = now;
+            }
+        }
+    }
+
     for (int i = 0; i < s_subscriber_count; i++) {
         if (s_subscribers[i].type == ev->type || s_subscribers[i].type == EVENT_TYPE_ALL) {
             BaseType_t sent = xQueueSend(s_subscribers[i].queue, ev, 0);
@@ -71,6 +82,10 @@ static void broadcast_event(broker_event_t *ev)
 
 static void broadcast_event_from_isr(broker_event_t *ev, BaseType_t *woken)
 {
+    if (s_broker_queue) {
+        (void)xQueueSendFromISR(s_broker_queue, ev, woken);
+    }
+
     for (int i = 0; i < s_subscriber_count; i++) {
         if (s_subscribers[i].type == ev->type || s_subscribers[i].type == EVENT_TYPE_ALL) {
             BaseType_t sent = xQueueSendFromISR(s_subscribers[i].queue, ev, woken);
@@ -113,6 +128,7 @@ hal_err_t event_broker_deinit(void)
 
 hal_err_t event_broker_subscribe(event_type_t type, QueueHandle_t queue)
 {
+    if (!queue) return HAL_ERR_INVALID_ARG;
     if (s_subscriber_count >= MAX_SUBSCRIBERS) return HAL_ERR_NO_MEM;
     if (!s_initialized) return HAL_ERR_NOT_INIT;
 

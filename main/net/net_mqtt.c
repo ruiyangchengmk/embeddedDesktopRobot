@@ -4,6 +4,7 @@
 #include "string.h"
 #include "stdlib.h"
 #include "stdio.h"
+#include "ctype.h"
 
 // TODO: 修改成你的 MQTT Broker IP 地址
 #define MQTT_BROKER_URL     "mqtt://192.168.1.100"
@@ -16,13 +17,22 @@ static const char *TAG = "NET_MQTT";
 static esp_mqtt_client_handle_t s_client = NULL;
 static net_mqtt_cmd_cb_t s_cmd_cb = NULL;
 
+static bool topic_equals(const char *topic, int topic_len, const char *expected)
+{
+    size_t expected_len = strlen(expected);
+    return topic_len == (int)expected_len && memcmp(topic, expected, expected_len) == 0;
+}
+
 /**
  * @brief Lightweight JSON angle parser.
- *        Searches for the first occurrence of "angle" followed by a number.
+ *        Searches for the "angle" key and parses the integer value after ':'.
  */
 static int parse_angle_from_json(const char *data, int len)
 {
     char buf[256];
+    char *end = NULL;
+    long value = 0;
+
     if (len >= sizeof(buf)) len = sizeof(buf) - 1;
     memcpy(buf, data, len);
     buf[len] = '\0';
@@ -31,10 +41,17 @@ static int parse_angle_from_json(const char *data, int len)
     if (!p) return -1;
 
     p += 7; // skip "angle"
-    while (*p && (*p != '-') && (*p < '0' || *p > '9')) p++;
+    while (*p && isspace((unsigned char)*p)) p++;
+    if (*p != ':') return -1;
+    p++;
+    while (*p && isspace((unsigned char)*p)) p++;
     if (!*p) return -1;
 
-    return atoi(p);
+    value = strtol(p, &end, 10);
+    if (end == p) return -1;
+    if (value < 0 || value > 180) return -1;
+
+    return (int)value;
 }
 
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
@@ -59,11 +76,13 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             ESP_LOGI(TAG, "TOPIC=%.*s", event->topic_len, event->topic);
             ESP_LOGI(TAG, "DATA=%.*s", event->data_len, event->data);
 
-            if (strncmp(event->topic, TOPIC_COMMANDS, event->topic_len) == 0) {
+            if (topic_equals(event->topic, event->topic_len, TOPIC_COMMANDS)) {
                 int angle = parse_angle_from_json(event->data, event->data_len);
-                if (angle >= 0 && angle <= 180 && s_cmd_cb) {
+                if (angle >= 0 && s_cmd_cb) {
                     s_cmd_cb(angle);
                     ESP_LOGI(TAG, "Command parsed: angle=%d", angle);
+                } else if (angle < 0) {
+                    ESP_LOGW(TAG, "Invalid command payload, angle not found or out of range");
                 }
             }
             break;

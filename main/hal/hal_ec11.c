@@ -33,6 +33,7 @@ static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 static volatile int64_t s_last_sw_time = 0;
 static volatile bool s_initialized = false;
 static TaskHandle_t s_reader_task_handle = NULL;
+static QueueHandle_t s_event_queue = NULL;
 
 // ================================================================
 // 轮询任务：负责旋转检测，不在 ISR 中做方向判定。
@@ -51,6 +52,7 @@ static void ec11_reader_task(void *arg)
         // 下降沿检测（clk 从 1 变 0）
         if (last_clk == 1 && clk == 0 && (now - last_tick) > 3) {
             last_tick = now;
+            hal_ec11_msg_t msg = {0};
 
             portENTER_CRITICAL(&s_lock);
             if (dt == 1) {
@@ -59,17 +61,24 @@ static void ec11_reader_task(void *arg)
                     s_angle += s_step;
                     if (s_angle > 180) s_angle = 180;
                 }
+                msg.event = EC11_EVENT_ROTATE_CW;
             } else {
                 // 逆时针
                 if (s_angle > 0) {
                     s_angle -= s_step;
                     if (s_angle < 0) s_angle = 0;
                 }
+                msg.event = EC11_EVENT_ROTATE_CCW;
             }
+            msg.angle = s_angle;
             portEXIT_CRITICAL(&s_lock);
 
+            if (s_event_queue) {
+                (void)xQueueSend(s_event_queue, &msg, 0);
+            }
+
             // 在任务上下文中发布旋转事件。
-            event_broker_publish(EVENT_TYPE_ENCODER_ROTATE, s_angle);
+            event_broker_publish(EVENT_TYPE_ENCODER_ROTATE, msg.angle);
         }
 
         last_clk = clk;
@@ -87,13 +96,21 @@ static void IRAM_ATTR ec11_sw_isr_handler(void *arg)
     int64_t now = esp_timer_get_time();
 
     if (level == 0 && (now - s_last_sw_time >= EC11_SW_DEBOUNCE_US)) {
+        hal_ec11_msg_t msg = {
+            .event = EC11_EVENT_BTN_PRESSED,
+            .angle = CFG_ENCODER_RESET,
+        };
         s_last_sw_time = now;
 
         portENTER_CRITICAL_ISR(&s_lock);
-        s_angle = CFG_ENCODER_RESET;
+        s_angle = msg.angle;
         portEXIT_CRITICAL_ISR(&s_lock);
 
-        event_broker_broadcast(EVENT_TYPE_ENCODER_CLICK, CFG_ENCODER_RESET);
+        if (s_event_queue) {
+            (void)xQueueSendFromISR(s_event_queue, &msg, NULL);
+        }
+
+        event_broker_broadcast(EVENT_TYPE_ENCODER_CLICK, msg.angle);
     }
 }
 
@@ -104,6 +121,12 @@ static void IRAM_ATTR ec11_sw_isr_handler(void *arg)
 hal_err_t hal_ec11_init(void)
 {
     if (s_initialized) return HAL_OK;
+
+    s_event_queue = xQueueCreate(16, sizeof(hal_ec11_msg_t));
+    if (!s_event_queue) {
+        ESP_LOGE(TAG, "Failed to create EC11 event queue");
+        return HAL_ERR_NO_MEM;
+    }
 
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << EC11_CLK_GPIO) | (1ULL << EC11_DT_GPIO) | (1ULL << EC11_SW_GPIO),
@@ -136,6 +159,8 @@ hal_err_t hal_ec11_init(void)
     );
     if (ok != pdPASS) {
         ESP_LOGE(TAG, "Failed to create ec11_reader_task");
+        vQueueDelete(s_event_queue);
+        s_event_queue = NULL;
         return HAL_ERR;
     }
 
@@ -153,6 +178,10 @@ hal_err_t hal_ec11_deinit(void)
     }
     gpio_isr_handler_remove(EC11_SW_GPIO);
     gpio_uninstall_isr_service();
+    if (s_event_queue) {
+        vQueueDelete(s_event_queue);
+        s_event_queue = NULL;
+    }
     s_initialized = false;
     return HAL_OK;
 }
@@ -185,5 +214,5 @@ void hal_ec11_set_step(int step)
 
 QueueHandle_t hal_ec11_get_queue(void)
 {
-    return event_broker_get_queue();
+    return s_event_queue;
 }

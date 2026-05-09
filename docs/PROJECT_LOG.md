@@ -1,5 +1,7 @@
 # ESP32-S3 端侧控制系统 — 项目过程与架构规划文档
 
+> 说明：本文件同时包含“当前状态摘要”和“历史过程日志”。带版本号的旧条目保留当时的设计背景与表述；涉及当前实现时，请以 `README.md`、`AGENTS.md`、`ARCHITECTURE.md` 的当前说明为准。
+
 ## 版本历史
 
 | 版本 | 日期 | 变更说明 |
@@ -16,6 +18,7 @@
 | v0.10 | 2026-04-23 | EC11 按键触发 GPIO3 无源蜂鸣器播放 hello world 旋律；独立 buzzer_task 非阻塞播放；支持后续 MAX98357 I2S DAC 升级为语音播报 |
 | v0.11 | 2026-04-24 | EC11→SG90 稳定性修复：舵机初始化时序修正、EC11 轮询 2ms、覆盖队列 + 自适应步进；GC9A01 启动链路与按键切图恢复 |
 | v0.12 | 2026-05-08 | HC-SR04 超声波测距集成：新增 hal_hcsr04.h/.c，Trig=GPIO8/Echo=GPIO9；`hcsr04_task` 运行于 core 1（解决 SPI 总线争抢导致的饿死问题）；`EVENT_TYPE_HCSR04_DISTANCE` 通过 event_broker 广播；距离标签实时显示于 GC9A01 屏幕顶部中央（青色 + 黑底）；表情图模式还原为中心全尺寸。 |
+| v0.13 | 2026-05-08 | 配置与接口自洽收尾：`gen_config.py` 增加严格校验；`hal_ec11_get_queue()` 改为返回独立 EC11 队列（`hal_ec11_msg_t`）；`event_broker_get_queue()` 真正接收所有 broker 事件；`rgb` 改为单槽覆盖队列；任务创建与 GC9A01 启动增加失败保护；保留网络层补齐 NVS 初始化与 MQTT topic/payload 校验。 |
 
 ---
 
@@ -41,6 +44,30 @@
 4. **已知问题修复**
    - **任务饿死**：hcsr04_task 在 core 0 会因 GC9A01 SPI 初始化期间被饿死；迁移到 core 1 后持续稳定运行 20+ 分钟无中断
    - 表情图还原为中央全尺寸显示
+
+## 0.13 更新摘要（2026-05-08）
+
+这一版主要做“边界条件和文档口径收尾”：
+
+1. **配置生成器加固**
+   - `servo.json` 现在强制 `ec11_max > ec11_min`
+   - `rgb.json` 强制 `keyframes` 非空且角度严格升序
+   - `encoder.json.step_size` 和 `clock.updateIntervalMs` 都要求正整数
+   - 未知显示模式会生成安全的禁用态宏，避免编译期宏缺失
+
+2. **EC11 / event_broker 接口修复**
+   - `hal_ec11_get_queue()` 改为返回独立 EC11 队列，元素类型为 `hal_ec11_msg_t`
+   - `event_broker_get_queue()` 会真正收到全部已发布/广播事件，不再只是一个空队列句柄
+   - 文档中的“100Hz 节流”统一更正为当前实际实现：`1ms burst guard`
+
+3. **主链路鲁棒性优化**
+   - `s_rgb_queue` 改为单槽覆盖队列，颜色消费者只追最新目标
+   - 所有 `xTaskCreatePinnedToCore()` 都检查返回值
+   - `GC9A01` 初始化失败时不会继续启动 `lvgl_task`
+
+4. **保留网络层补强**
+   - `net_wifi_init()` 内部补齐 NVS 初始化
+   - `net_mqtt.c` 改为精确 topic 匹配，并校验 angle 范围
 
 ---
 
@@ -113,8 +140,8 @@
   - SW  (按键) → `GPIO7`
 - **实现要点**：
   - 配置为输入模式并开启内部上拉。
-  - 使用 `GPIO_INTR_NEGEDGE`（下降沿）中断检测旋转。
-  - 中断内读取 DT 电平判断方向（顺时针/逆时针）。
+  - 当前稳定版本使用 `2ms` 轮询检测旋转边沿，按键才使用 `GPIO_INTR_NEGEDGE`。
+  - 检测到 `CLK` 下降沿后读取 DT 电平判断方向（顺时针/逆时针）。
   - 对全局角度变量使用 `portMUX_TYPE` 临界区保护，避免任务与中断竞争。
   - 依赖组件：`esp_driver_gpio`。
 - **状态**：✅ 验证通过，旋转一格角度 ±2°，按键重置 90°。
@@ -330,9 +357,8 @@ INIT → WIFI_CONNECTING → MQTT_CONNECTING → RUNNING → (DISCONNECTED → R
 ├── control/                    # 用户可编辑的配置（JSON）
 │   ├── servo.json     # 舵机角度映射
 │   ├── rgb.json       # 颜色 keyframe
-│   ├── display.json   # LCD 显示模式和文字（已废弃）
 │   ├── encoder.json   # 编码器步进/初始角度
-│   └── modeSelect.json # 显示模式选择（clockDisplay / images_display_1）
+│   └── modeSelect.json # 显示模式选择（clockDisplay / images_display_1 / images_display_2）
 ├── components/
 │   └── esp-mqtt/               # 官方 MQTT 客户端库（当前未编译）
 ├── docs/
@@ -343,14 +369,15 @@ INIT → WIFI_CONNECTING → MQTT_CONNECTING → RUNNING → (DISCONNECTED → R
 └── main/                       # 主组件
     ├── CMakeLists.txt          # 自动收集 hal/*.c 和 main.c
     ├── app_config.h           # 自动生成（由 gen_config.py 产出，勿手动修改）
-    ├── main.c                  # 应用层：ec11_task + LCD 刷新主循环
+    ├── main.c                  # 应用层：event_broker + consumer/servo/rgb/lvgl/hcsr04 任务
     ├── hal/                    # 硬件抽象层
     │   ├── hal_common.h
     │   ├── hal_servo.h / .c
     │   ├── hal_rgb.h   / .c
     │   ├── hal_ec11.h  / .c
     │   ├── hal_clock.h / .c  # 软件 RTC（esp_timer + 编译时刻时间）
-    │   └── hal_gc9a01.h / .c # GC9A01 SPI LCD
+    │   ├── hal_gc9a01.h / .c # GC9A01 SPI LCD
+    │   └── hal_hcsr04.h / .c # HC-SR04 超声波测距
     ├── lvgl_clock.c/.h        # 时钟显示（数字 + lv_scale 指针）
     └── net/                    # 网络通信层（代码完整保留，当前未编译）
         ├── net_wifi.h / .c
@@ -361,10 +388,10 @@ INIT → WIFI_CONNECTING → MQTT_CONNECTING → RUNNING → (DISCONNECTED → R
 
 - **HAL 层**：✅ 已完成。五个模块（`hal_servo`, `hal_rgb`, `hal_ec11`, `hal_clock`, `hal_gc9a01`）接口干净，不依赖应用层或网络层。LCD1602 已移除。
 - **NET 层**：代码完整保留在 `main/net/`，**当前未编译**，固件为纯本地模式。
-- **配置系统**：所有应用参数通过 `control/*.json` 配置，`./flash.sh` 运行时自动调用 `gen_config.py` 生成 `main/app_config.h`。`modeSelect.json` 控制显示模式（clockDisplay / images_display_1）。
+- **配置系统**：所有应用参数通过 `control/*.json` 配置，`./flash.sh` 运行时自动调用 `gen_config.py` 生成 `main/app_config.h`。`modeSelect.json` 控制显示模式（clockDisplay / images_display_1 / images_display_2），并在构建前做严格校验。
 - **应用层**：`main.c` 基于 `event_broker` 广播-订阅模型。`consumer_task` 将事件转换为 `angle_msg_t` 后广播到 4 个私有队列，各消费者独立运行。
 - **当前依赖组件**：`driver`, `esp_driver_rmt`, `esp_driver_ledc`, `esp_driver_gpio`, `esp_driver_i2c`, `esp_driver_spi`, `esp_timer`, `lvgl`。
-- **EC11 架构**：轮询任务（10ms）替代 ISR 旋转检测，按键仍使用 ISR。彻底解决 ISR 内阻塞 API 导致的 panic 问题。
+- **EC11 架构**：轮询任务（2ms）替代 ISR 旋转检测，按键仍使用 ISR。`hal_ec11_get_queue()` 提供独立 EC11 事件队列，彻底解决 ISR 内阻塞 API 导致的 panic 问题，同时兼顾可复用性。
 - **GC9A01**：直接 SPI 驱动（Bodmer init sequence），40MHz，`hal_gc9a01_init()` 每次调用都会硬复位+清屏，确保 LVGL 接管时状态干净。
 - **时钟显示（v0.9）**：数字模式（HH:MM:SS + 日期标签）；指针模式使用 `lv_scale`（`LV_SCALE_MODE_ROUND_INNER`）+ `lv_scale_set_line_needle_value()` 自动处理指针旋转，优于手动画线方案。时间源为编译主机时间（`gen_config.py` 嵌入 `CFG_BUILD_*` 宏）。EC11 按键切换数字/指针，旋转切换内容（时间/日期/星期）。
 
@@ -458,7 +485,7 @@ idf_component_register(SRCS ${SOURCES}
                                   esp_wifi esp-mqtt nvs_flash esp_timer)
 ```
 
-然后恢复 `main.c` 中 `net_wifi.h`、`net_mqtt.h`、NVS 初始化、网络初始化、MQTT 发布任务和回调即可（参考 git 历史或文档备份）。
+然后恢复 `main.c` 中 `net_wifi.h`、`net_mqtt.h`、网络初始化、MQTT 发布任务和回调即可（参考 git 历史或文档备份）。`net_wifi_init()` 当前已经内置 NVS 初始化。
 
 ### 4.5 MQTT 接入设计备忘（Phase 1 已验证）
 
@@ -471,8 +498,9 @@ idf_component_register(SRCS ${SOURCES}
   - `device/esp32_01/sensors`：发布角度和 RGB 值
   - `device/esp32_01/commands`：订阅远程控制指令
   - `device/esp32_01/heartbeat`：每 5 秒发布一次在线状态
-- **JSON 解析策略**：采用轻量级字符串扫描：在 payload 中搜索 `"angle"` 并提取后续的第一个整数值。可兼容 `{"angle":120}` 和 `{"commands":[{"type":"servo","angle":120}]}` 两种格式。
-- **安全设计**：`g_target_angle` 使用 `portMUX_TYPE` 临界区保护，确保中断（EC11）、MQTT 回调、主循环三方的并发安全。
+- **JSON 解析策略**：采用轻量级字符串扫描：在 payload 中搜索 `"angle"` key，并提取其后 `:` 后的第一个整数值。可兼容 `{"angle":120}` 和 `{"commands":[{"type":"servo","angle":120}]}` 两种格式。
+- **Topic 校验**：只接受与 `device/esp32_01/commands` 完全相等的 topic，避免前缀误匹配。
+- **安全设计**：若未来重新接回 MQTT，建议把解析出的 angle 重新发布进 `event_broker`，复用现有 `consumer_task -> servo/rgb/lvgl` 链路，而不是再引入新的全局目标角变量。
 
 - **烧录端口**：`/dev/ttyACM0`
 

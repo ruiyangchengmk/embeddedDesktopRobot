@@ -38,6 +38,42 @@ def validate_rgb(val, name):
     return val
 
 
+def validate_positive_int(val, name):
+    if not isinstance(val, int) or val <= 0:
+        raise ValueError(f"{name} must be a positive integer, got {val}")
+    return val
+
+
+def validate_keyframes(keyframes):
+    if not isinstance(keyframes, list) or not keyframes:
+        raise ValueError("rgb.keyframes must contain at least one keyframe")
+
+    prev_angle = None
+    for idx, kf in enumerate(keyframes):
+        angle = validate_angle(kf["angle"], f"rgb.keyframes[{idx}].angle")
+        validate_rgb(kf, f"rgb.keyframes[{idx}]")
+        if prev_angle is not None and angle <= prev_angle:
+            raise ValueError(
+                "rgb.keyframes must be strictly ascending by angle with no duplicates"
+            )
+        prev_angle = angle
+
+
+def emit_display_defaults(out, display_type):
+    out.append(f'#define CFG_DISPLAY_MODE_STRING "{display_type}"')
+    out.append("#define CFG_MODE_IMAGES_DISPLAY_1 0")
+    out.append("#define CFG_MODE_IMAGES_DISPLAY_2 0")
+    out.append("#define CFG_MODE_CLOCK_DISPLAY    0")
+    out.append("#define CFG_CLOCK_SHOW_DATE       1")
+    out.append("#define CFG_CLOCK_SHOW_TIME       1")
+    out.append("#define CFG_CLOCK_UPDATE_MS       1000")
+    out.append("#define CFG_CLOCK_ANALOG_FACE_R   100")
+    out.append("#define CFG_CLOCK_ANALOG_HOUR_LEN 60")
+    out.append("#define CFG_CLOCK_ANALOG_MIN_LEN  80")
+    out.append("#define CFG_CLOCK_ANALOG_SEC_LEN  90")
+    out.append("#define CFG_CLOCK_ANALOG_SHOW_SEC 1")
+
+
 def generate_header(configs, mode_select):
     servo = configs["servo"]
     rgb = configs["rgb"]
@@ -50,14 +86,14 @@ def generate_header(configs, mode_select):
     e_max = validate_angle(e2s["ec11_max"], "servo.ec11_to_servo.ec11_max")
     s_min = validate_angle(e2s["servo_min"], "servo.ec11_to_servo.servo_min")
     s_max = validate_angle(e2s["servo_max"], "servo.ec11_to_servo.servo_max")
+    if e_max <= e_min:
+        raise ValueError("servo.ec11_to_servo.ec11_max must be greater than ec11_min")
 
     rgb_init = validate_rgb(rgb["initial"], "rgb.initial")
     keyframes = rgb["keyframes"]
-    for kf in keyframes:
-        validate_angle(kf["angle"], "rgb.keyframes[].angle")
-        validate_rgb(kf, "rgb.keyframes[]")
+    validate_keyframes(keyframes)
 
-    enc_step = int(encoder["step_size"])
+    enc_step = validate_positive_int(encoder["step_size"], "encoder.step_size")
     enc_init = validate_angle(encoder["initial_angle"], "encoder.initial_angle")
     enc_reset = validate_angle(encoder["reset_angle"], "encoder.reset_angle")
 
@@ -148,9 +184,13 @@ def generate_header(configs, mode_select):
                 out.append("#define CFG_MODE_IMAGES_DISPLAY_2 0")
                 out.append("#define CFG_MODE_CLOCK_DISPLAY    1")
                 clock = active.get("clock", {})
+                update_ms = validate_positive_int(
+                    clock.get("updateIntervalMs", 1000),
+                    "modeSelect.clock.updateIntervalMs"
+                )
                 out.append(f"#define CFG_CLOCK_SHOW_DATE       {1 if clock.get('showDate', True) else 0}")
                 out.append(f"#define CFG_CLOCK_SHOW_TIME       {1 if clock.get('showTime', True) else 0}")
-                out.append(f"#define CFG_CLOCK_UPDATE_MS       {clock.get('updateIntervalMs', 1000)}")
+                out.append(f"#define CFG_CLOCK_UPDATE_MS       {update_ms}")
                 analog = clock.get("analogStyle", {})
                 out.append(f"#define CFG_CLOCK_ANALOG_FACE_R   {analog.get('faceRadius', 100)}")
                 out.append(f"#define CFG_CLOCK_ANALOG_HOUR_LEN {analog.get('hourHandLength', 60)}")
@@ -158,17 +198,11 @@ def generate_header(configs, mode_select):
                 out.append(f"#define CFG_CLOCK_ANALOG_SEC_LEN  {analog.get('secondHandLength', 90)}")
                 out.append(f"#define CFG_CLOCK_ANALOG_SHOW_SEC {1 if analog.get('showSecondHand', True) else 0}")
             else:
-                out.append("// Unknown display type, provide safe defaults for clock macros")
-                out.append("#define CFG_CLOCK_SHOW_DATE       1")
-                out.append("#define CFG_CLOCK_SHOW_TIME       1")
-                out.append("#define CFG_CLOCK_UPDATE_MS       1000")
-                out.append("#define CFG_CLOCK_ANALOG_FACE_R   100")
-                out.append("#define CFG_CLOCK_ANALOG_HOUR_LEN 60")
-                out.append("#define CFG_CLOCK_ANALOG_MIN_LEN  80")
-                out.append("#define CFG_CLOCK_ANALOG_SEC_LEN  90")
-                out.append("#define CFG_CLOCK_ANALOG_SHOW_SEC 1")
+                out.append("// Unknown display type, provide safe disabled-mode defaults")
+                emit_display_defaults(out, dtype)
         else:
             out.append("// No active display mode found in modeSelect.json")
+            out.append('#define CFG_DISPLAY_MODE_STRING "images_display_1"')
             out.append("#define CFG_MODE_IMAGES_DISPLAY_1 1")
             out.append("#define CFG_MODE_IMAGES_DISPLAY_2 0")
             out.append("#define CFG_MODE_CLOCK_DISPLAY    0")
@@ -182,6 +216,7 @@ def generate_header(configs, mode_select):
             out.append("#define CFG_CLOCK_ANALOG_SHOW_SEC 1")
     else:
         out.append("// modeSelect.json not found, default to images_display_1")
+        out.append('#define CFG_DISPLAY_MODE_STRING "images_display_1"')
         out.append("#define CFG_MODE_IMAGES_DISPLAY_1 1")
         out.append("#define CFG_MODE_IMAGES_DISPLAY_2 0")
         out.append("#define CFG_MODE_CLOCK_DISPLAY    0")

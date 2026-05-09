@@ -97,8 +97,8 @@ control/*.json  →  gen_config.py  →  main/app_config.h  →  main.c 编译
 | 字段 | 说明 | 默认值 |
 |------|------|--------|
 | `initial_angle` | 舵机初始角度（°） | 90 |
-| `ec11_to_servo.ec11_min` | EC11 输入下限 | 0 |
-| `ec11_to_servo.ec11_max` | EC11 输入上限 | 180 |
+| `ec11_to_servo.ec11_min` | EC11 输入下限 | 40 |
+| `ec11_to_servo.ec11_max` | EC11 输入上限 | 130 |
 | `ec11_to_servo.servo_min` | 舵机输出下限 | 0 |
 | `ec11_to_servo.servo_max` | 舵机输出上限 | 180 |
 
@@ -119,7 +119,7 @@ control/*.json  →  gen_config.py  →  main/app_config.h  →  main.c 编译
 
 ### 4.1.2 rgb.json — RGB 颜色映射
 
-`keyframes` 为角度→颜色关键帧列表，按 `angle` 升序排列。
+`keyframes` 为角度→颜色关键帧列表，按 `angle` 严格升序排列，至少保留 1 项，且角度不能重复。
 
 **示例：0°绿→90°蓝→180°红（默认）**：
 ```json
@@ -142,6 +142,13 @@ control/*.json  →  gen_config.py  →  main/app_config.h  →  main.c 编译
 | `step_size` | 每格旋转的角度（°） | 2 |
 | `initial_angle` | 初始逻辑角度（°） | 90 |
 | `reset_angle` | 按键按下后复位到的角度（°） | 90 |
+
+### 4.1.4 配置校验规则
+
+- `servo.json`：`ec11_max` 必须大于 `ec11_min`
+- `rgb.json`：`keyframes` 至少 1 项，且角度严格升序
+- `encoder.json`：`step_size` 必须为正整数
+- `modeSelect.json`：`clock.updateIntervalMs` 必须为正整数
 
 ---
 
@@ -179,10 +186,11 @@ hcsr04_task (core 1, 优先级 10) ──→ event_broker(EVENT_TYPE_HCSR04_DIST
 3. **EC11 轮询优化**：`EC11_POLL_MS` 从历史上的 `10ms` 下调到 `2ms`，降低快速旋转时漏脉冲概率。
 4. **舵机队列优化**：`s_servo_queue` 改为单槽覆盖队列，任务只保留最新目标值。
 5. **舵机平滑优化**：由固定 `1°/10ms` 改为按误差自适应步进。
-6. **显示队列优化**：`s_lvgl_queue` 同样改为覆盖队列，按键切图不会被旧旋转消息淹没。
-7. **事件丢弃可观测**：`event_broker` 为队列满场景补充告警日志。
+6. **RGB/显示队列优化**：`s_rgb_queue`、`s_lvgl_queue` 都改为覆盖队列，颜色和按键显示行为都只保留最新目标。
+7. **事件丢弃可观测**：`event_broker` 为 broker 主队列和订阅队列的满队场景补充告警日志。
 8. **GC9A01 启动修复**：默认关闭启动期 `spi_test`，避免 bring-up 测试影响正式显示任务。
 9. **HC-SR04 超声波测距集成**（2026-05-08）：`hal_hcsr04.h/.c`，Trig=GPIO8/Echo=GPIO9，busy-wait 精确定时；`hcsr04_task` 运行于 **core 1**（避免 SPI 总线争抢导致任务饿死）；`EVENT_TYPE_HCSR04_DISTANCE` 通过 event_broker 广播；距离标签显示于 GC9A01 屏幕顶部中央（青色 + 黑底）。
+10. **接口自洽修复**（2026-05-08）：`hal_ec11_get_queue()` 现在返回独立 EC11 队列，元素类型为 `hal_ec11_msg_t`；`event_broker_get_queue()` 也会真正收到全部 broker 事件。
 
 ---
 
@@ -204,6 +212,7 @@ cd /home/mikurubeam/Desktop/espattack
 ### HAL 层原则
 - `hal/` 目录下的代码**只依赖 ESP-IDF 底层 API**，不引用 `main.c` 或网络层变量。
 - **禁止在 ISR 内调用任何可能阻塞的 API**（信号量、队列发送阻塞、malloc 等）。
+- `hal_ec11_get_queue()` 的队列元素类型是 `hal_ec11_msg_t`；如需统一监听所有 broker 事件，改用 `event_broker_get_queue()`。
 - 新增传感器/执行器时，按 `hal_xxx.h / hal_xxx.c` 的命名规范新建文件，`main/CMakeLists.txt` 会自动递归收集 `.c` 文件。
 - SPI 传输中每 20 行必须调用 `vTaskDelay(1)` 让出 CPU，防止阻塞 scheduler。
 
@@ -220,7 +229,8 @@ cd /home/mikurubeam/Desktop/espattack
 如需恢复 WiFi + MQTT：
 1. 修改 `main/CMakeLists.txt` 的 `REQUIRES`，加入 `esp_wifi esp-mqtt nvs_flash`。
 2. 在 `main.c` 中恢复 `net_wifi.h`、`net_mqtt.h` 引用及初始化逻辑。
-3. 参考 `docs/ARCHITECTURE.md` 或 `docs/PROJECT_LOG.md` 4.4 节。
+3. `net_wifi_init()` 已内置 NVS 初始化；`net_mqtt.c` 只接受与 `TOPIC_COMMANDS` 完全相等的 topic，并从 JSON 中提取第一个 `"angle": <0..180>` 整数。
+4. 参考 `docs/ARCHITECTURE.md` 或 `docs/PROJECT_LOG.md` 4.4 节。
 
 ---
 

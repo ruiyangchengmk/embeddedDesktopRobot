@@ -27,25 +27,25 @@ cmd(0xEF);              // 单命令 transaction
 cmd_data(0xEB, data, 1); // 命令后跟数据 transaction
 ```
 
-### 1.2 缺少 MADCTL 寄存器设置
+### 1.2 缺少明确的 MADCTL 寄存器设置
 
 **现象**：屏幕有背光但全黑。
 
-**根因**：未设置 MADCTL（Memory Data Access Control）寄存器，导致像素方向全部错误。
+**根因**：未设置 MADCTL（Memory Data Access Control）寄存器，导致面板像素方向或颜色顺序错误。
 
-**修复**：初始化序列中添加 `cmd_data(0x36, (uint8_t[]){0x08}, 1);`（MX=1, MY=1, BGR=1，竖屏模式）。
+**修复**：把 MADCTL 变成显式可配项。当前稳定版本通过 `GC9A01_MADCTL_VALUE` 宏控制，默认实机验证值为 `0x00`。
 
-### 1.3 RGB565 字节序与面板 BGR 模式不匹配
+### 1.3 RGB565 字节序与面板颜色顺序不匹配
 
 **现象**：显示颜色整体偏蓝/紫，与预期不符。
 
-**根因**：RGB565 实际传输顺序是 **BGR**，面板在 MADCTL=0x08 时工作于 BGR 模式。
+**根因**：ESP32-S3 侧的 RGB565 像素布局、SPI 传输字节序、以及面板实际颜色顺序三者没有对齐。
 
 | 预期颜色 | 错误字节序（R=255,G=0,B=0） | 正确字节序 |
 |----------|---------------------------|-----------|
 | 红色 | `0x00F8`（B=0,G=0,R=255） | `0xF800`（R=255,B=0） |
 
-**修复**：发送像素数据前对 RGB565 做字节交换，或在 fillRect 后做 `color >>= 8 \| color << 8`。
+**修复**：当前稳定版本在 `hal_gc9a01_draw_bitmap()` 内部统一做颜色位交换和字节交换，应用层与 `lvgl_flush_cb` 不再额外处理。
 
 ### 1.4 缺少 Display ON 序列
 
@@ -60,13 +60,13 @@ vTaskDelay(pdMS_TO_TICKS(120));
 cmd(0x29);  // Display ON
 ```
 
-### 1.5 未移除 0x21（反显）命令
+### 1.5 未明确校验 0x21（反显）命令是否适配当前面板
 
 **现象**：颜色显示异常，对比度极低。
 
-**根因**：`0x21`（Display Inversion ON）与面板不兼容。
+**根因**：不同批次面板对 `0x21`（Display Inversion ON）的兼容性并不一致。
 
-**修复**：从初始化序列中删除所有 `cmd(0x21);`。
+**修复**：当前版本把它收敛成 `GC9A01_COLOR_INVERSION` 宏。默认值为 `1`，这是当前硬件实测稳定配置；若后续面板颜色异常，优先检查该宏而不是直接删除相关命令。
 
 ### 1.6 SPI 时序问题（DC 线未正确切换）
 
@@ -161,7 +161,7 @@ I (3915) APP: [lvgl] tick=20000  ← 应为 10ms，实际过了 10 秒
 
 1. **广播-订阅架构**：EC11 读取与 SPI 显示完全分离
 2. **CPU 让步**：每传输 20 行调用 `vTaskDelay(1)`，主动让出 CPU
-3. **优先级分离**：ec11_reader 最高优先级（20），舵机/消费任务次高（15/14），GC9A01 独立低优先级（5）
+3. **优先级分离**：当前稳定配置下 `consumer_task=18`、`servo=15`、`rgb=14`、`ec11_reader=12`、`lvgl=5`，输入和执行链路优先于显示链路
 
 ---
 
@@ -197,7 +197,7 @@ servo_angle = servo_min + (ec11_angle - ec11_min) * (servo_max - servo_min) / (e
 1. 在 `hal_ec11.h` 添加 typedef → 导致 hal_ec11.c 中 "conflicting types" 错误
 2. hal_ec11.c 的 struct 定义与新增 typedef 冲突
 
-**正确解决方案**：在 main.c 中定义与 hal_ec11.c 内部布局一致的 local struct：
+**历史解决方案**：早期曾在 `main.c` 中临时定义与 `hal_ec11.c` 内部布局一致的 local struct：
 
 ```c
 typedef struct {
@@ -205,6 +205,8 @@ typedef struct {
     int angle;
 } ec11_evt_t;
 ```
+
+**当前正式修复**：`hal_ec11.h` 现在已经公开 `hal_ec11_msg_t`，`hal_ec11_get_queue()` 返回的就是这个类型的独立 EC11 队列，不再需要应用层手写镜像 struct。
 
 ---
 
@@ -219,6 +221,20 @@ typedef struct {
 float t = (float)delta / range;
 *r = (uint8_t)(kf[i].r + t * (kf[i + 1].r - kf[i].r));
 ```
+
+---
+
+## 9. 配置合法但行为崩溃的问题
+
+**问题描述**：`control/*.json` 看起来能解析，但生成后的 `app_config.h` 可能导致运行时崩溃或除零。
+
+**典型根因**：
+- `servo.ec11_to_servo.ec11_max <= ec11_min`，导致映射分母为 0 或负数
+- `rgb.keyframes` 为空，或角度重复/乱序，导致颜色插值访问越界或除零
+- `encoder.step_size <= 0`，导致输入逻辑失真
+- `clock.updateIntervalMs <= 0`，导致时钟刷新节奏异常
+
+**当前修复**：这些约束已前移到 `gen_config.py`，构建前直接 fail fast，不再把坏配置带到固件运行时。
 
 ---
 

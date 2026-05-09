@@ -72,6 +72,26 @@ static void send_lvgl_msg(const angle_msg_t *msg)
     xQueueOverwrite(s_lvgl_queue, msg);
 }
 
+static void send_rgb_msg(const angle_msg_t *msg)
+{
+    xQueueOverwrite(s_rgb_queue, msg);
+}
+
+static bool create_task_checked(TaskFunction_t task_fn,
+                                const char *name,
+                                uint32_t stack_words,
+                                UBaseType_t priority,
+                                BaseType_t core_id)
+{
+    BaseType_t ok = xTaskCreatePinnedToCore(
+        task_fn, name, stack_words, NULL, priority, NULL, core_id);
+    if (ok != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create task '%s'", name);
+        return false;
+    }
+    return true;
+}
+
 // ================================================================
 // 辅助函数
 // ================================================================
@@ -79,6 +99,13 @@ static void color_from_angle(int angle, uint8_t *r, uint8_t *g, uint8_t *b)
 {
     const rgb_keyframe_t *kf = s_rgb_keyframes;
     int count = CFG_RGB_KEYFRAME_COUNT;
+
+    if (count <= 0) {
+        *r = 0;
+        *g = 0;
+        *b = 0;
+        return;
+    }
 
     if (angle <= kf[0].angle) {
         *r = kf[0].r; *g = kf[0].g; *b = kf[0].b;
@@ -131,7 +158,7 @@ static void consumer_task(void *arg)
 
         // 广播给所有消费者（各自私有队列）
         send_servo_msg(&msg);
-        xQueueSend(s_rgb_queue, &msg, 0);
+        send_rgb_msg(&msg);
         send_lvgl_msg(&msg);
 
         int64_t now_us = esp_timer_get_time();
@@ -435,7 +462,7 @@ void app_main(void)
 {
     // ---- 第一步：创建所有队列（在任何任务启动前）----
     s_servo_queue = xQueueCreate(1, sizeof(angle_msg_t));
-    s_rgb_queue = xQueueCreate(10, sizeof(angle_msg_t));
+    s_rgb_queue = xQueueCreate(1, sizeof(angle_msg_t));
     s_lvgl_queue = xQueueCreate(1, sizeof(angle_msg_t));
     s_hcsr04_queue = xQueueCreate(16, sizeof(broker_event_t));
     s_consumer_queue = xQueueCreate(32, sizeof(broker_event_t));
@@ -456,10 +483,12 @@ void app_main(void)
     ESP_ERROR_CHECK(hal_rgb_init() == HAL_OK ? ESP_OK : ESP_FAIL);
 
     // ---- 启动消费者任务 ----
-    xTaskCreatePinnedToCore(consumer_task, "consumer", 4096, NULL, 18, NULL, 0);
-    xTaskCreatePinnedToCore(servo_task,   "servo",   4096, NULL, 15, NULL, 0);
-    xTaskCreatePinnedToCore(rgb_task,     "rgb",     4096, NULL, 14, NULL, 0);
-    xTaskCreatePinnedToCore(hcsr04_task,  "hcsr04",  2048, NULL, 10, NULL, 1);
+    if (!create_task_checked(consumer_task, "consumer", 4096, 18, 0) ||
+        !create_task_checked(servo_task, "servo", 4096, 15, 0) ||
+        !create_task_checked(rgb_task, "rgb", 4096, 14, 0) ||
+        !create_task_checked(hcsr04_task, "hcsr04", 2048, 10, 1)) {
+        return;
+    }
 
     // ---- 可选 SPI bring-up 测试；正常运行默认跳过，避免阻塞 LVGL 启动 ----
 #if APP_RUN_GC9A01_SPI_TEST
@@ -474,10 +503,9 @@ void app_main(void)
     ESP_LOGI(TAG, ">>> hal_gc9a01_init() for LVGL...");
     if (hal_gc9a01_init() != HAL_OK) {
         ESP_LOGW(TAG, ">>> hal_gc9a01_init() FAILED");
+    } else if (!create_task_checked(lvgl_task, "lvgl", 8192, 5, 1)) {
+        return;
     }
-
-    // ---- 启动 LVGL 任务（GC9A01 已初始化完毕，无竞态）----
-    xTaskCreatePinnedToCore(lvgl_task,   "lvgl",    8192, NULL,  5, NULL, 1);
 
     // ---- 最后启动 EC11，让显示链路先完全就绪 ----
     ESP_ERROR_CHECK(hal_ec11_init() == HAL_OK ? ESP_OK : ESP_FAIL);

@@ -65,15 +65,23 @@ idf.py build flash monitor
 control/
 ├── servo.json     # 舵机角度映射
 ├── rgb.json       # RGB 颜色关键帧
-└── encoder.json   # 编码器步进/初始角度
+├── encoder.json   # 编码器步进/初始角度
+└── modeSelect.json # 显示模式选择
 ```
 
 修改 JSON 后重新 `./flash.sh` 即可生效。
+
+当前版本会在构建前校验配置：
+- `servo.json` 中 `ec11_max` 必须大于 `ec11_min`
+- `rgb.json` 中 `keyframes` 至少 1 项，且角度必须严格升序、不能重复
+- `encoder.json` 中 `step_size` 必须为正整数
+- `modeSelect.json` 中时钟模式的 `updateIntervalMs` 必须为正整数
 
 常用项：
 - `control/encoder.json`：EC11 步进角、初始角、按键复位角
 - `control/servo.json`：EC11 到舵机的映射范围
 - `control/rgb.json`：角度到 RGB 关键帧映射
+- `control/modeSelect.json`：在 `images_display_1`、`images_display_2`、`clockDisplay` 间切换
 
 ## 项目结构
 
@@ -114,6 +122,10 @@ embeddedDesktopRobot/
 ## 当前运行行为
 
 - 上电后先初始化 `servo/rgb`，再初始化 `GC9A01`，最后启动 `EC11`
+- 所有任务创建都会检查返回值；若 `GC9A01` 初始化失败，则不会继续启动 `lvgl_task`
 - `EC11` 旋转检测采用 `2ms` 轮询，按键采用 GPIO 中断 + `200ms` 消抖
+- `hal_ec11_get_queue()` 返回独立的 EC11 事件队列，队列元素类型为 `hal_ec11_msg_t`
+- `event_broker_publish()` 带 `1ms` burst guard，用于过滤极端机械抖动
 - `servo_task` 只保留最新目标值，并按误差自适应步进，避免快速旋转时严重滞后
+- `rgb_task` 也只保留最新颜色目标，避免无意义的旧颜色积压
 - `lvgl_task` 默认使用 `images_display_2` 模式，按下 `EC11` 会在 4 张表情图间切换

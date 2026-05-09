@@ -16,13 +16,12 @@ typedef enum {
 } hal_ec11_event_t;
 
 /**
- * @brief EC11 event callback prototype.
- *
- * @param event Event type.
- * @param current_angle Current accumulated angle (0 ~ 180 by default).
- * @param user_data User context passed during registration.
+ * @brief Public EC11 queue message type.
  */
-typedef void (*hal_ec11_cb_t)(hal_ec11_event_t event, int current_angle, void *user_data);
+typedef struct {
+    hal_ec11_event_t event;
+    int angle;
+} hal_ec11_msg_t;
 
 /**
  * @brief Initialize EC11 rotary encoder GPIO and interrupts.
@@ -43,7 +42,7 @@ hal_err_t hal_ec11_deinit(void);
 /**
  * @brief Get the event queue handle for use with FreeRTOS xQueueReceive.
  *
- * Use this to receive EC11 events in a task context instead of callbacks.
+ * Queue element type is hal_ec11_msg_t.
  *
  * @return Queue handle.
  */

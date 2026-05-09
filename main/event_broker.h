@@ -54,7 +54,7 @@ hal_err_t event_broker_deinit(void);
 hal_err_t event_broker_subscribe(event_type_t type, QueueHandle_t queue);
 
 /**
- * @brief 发布事件（受 100Hz 节流限制）。
+ * @brief 发布事件（带 1ms burst guard，过滤极端抖动）。
  *
  * @param type   事件类型
  * @param value  事件值（如编码器差值或角度）
@@ -68,7 +68,7 @@ hal_err_t event_broker_publish(event_type_t type, int32_t value);
 hal_err_t event_broker_broadcast(event_type_t type, int32_t value);
 
 /**
- * @brief 获取事件总线的主队列句柄（用于统一接收所有事件）。
+ * @brief 获取事件总线的主队列句柄（统一接收所有已发布/广播事件）。
  */
 QueueHandle_t event_broker_get_queue(void);
 
