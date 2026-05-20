@@ -9,3 +9,5 @@ __pycache__/
 .espressif/
 dependencies.lock
 components/esp-mqtt
+main/audio_assets/*.pcm
+!main/audio_assets/warning_too_close.pcm

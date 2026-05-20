@@ -10,8 +10,8 @@
 
 - `EC11` 旋转输入
 - `event_broker` 广播
-- `servo/rgb/lvgl/hcsr04` 各自消费
-- `SG90 + WS2812 + GC9A01 + HC-SR04` 独立响应
+- `servo/rgb/lvgl/hcsr04/audio` 各自消费
+- `SG90 + WS2812 + GC9A01 + HC-SR04 + I2S audio` 独立响应
 
 网络层代码保留在仓库中，但当前默认固件不启用。
 
@@ -43,6 +43,11 @@
 | WS2812 RGB | DIN | **GPIO48** | 板载 |
 | HC-SR04 超声波 | Trig (发送) | **GPIO8** | |
 | HC-SR04 超声波 | Echo (接收) | **GPIO9** | |
+| I2S 音频 | BCLK | **GPIO13** | 功放模块位时钟 |
+| I2S 音频 | LRCLK / WS | **GPIO14** | 字选择时钟 |
+| I2S 音频 | SDA / DOUT | **GPIO15** | ESP32-S3 输出到功放 |
+| I2S 音频 | DATA / DIN | **GPIO16** | 麦克风输入预留，当前未启用 |
+| I2S 音频 | MCLK / CLK | **GPIO17** | 可选时钟线，当前固件未驱动 |
 
 ---
 
@@ -76,6 +81,7 @@
         ├── hal_ec11.h/.c       # EC11 编码器，GPIO5/6/7，轮询+ISR
         ├── hal_gc9a01.h/.c     # GC9A01 1.28" 圆形 SPI LCD，直接 SPI
         ├── hal_hcsr04.h/.c     # HC-SR04 超声波，GPIO8/9，busy-wait 定时
+        ├── hal_audio_out.h/.c  # I2S 音频输出，GPIO13/14/15（GPIO17 可选）
         └── hal_buzzer.h/.c     # 蜂鸣器（代码保留，默认未接入主流程）
 ```
 
@@ -156,14 +162,15 @@ control/*.json  →  gen_config.py  →  main/app_config.h  →  main.c 编译
 
 ### 当前稳定架构（2026-05-08）
 
-EC11 作为唯一输入源，通过 `event_broker` 发布事件；`consumer_task` 将事件转换为 `angle_msg_t` 后广播到 3 个**私有队列**，各任务独立运行互不阻塞：
+EC11 作为唯一输入源，通过 `event_broker` 发布事件；`consumer_task` 将事件转换为各消费者需要的控制消息后广播到 4 个**私有队列**，各任务独立运行互不阻塞：
 
 ```
 ec11_reader (优先级 12) ──发布──→ event_broker ──→ consumer_task (18)
                                                           │
                           ├─→ s_servo_queue  → servo_task (15) → 只保留最新目标 + 自适应步进
                           ├─→ s_rgb_queue    → rgb_task (14)   → 颜色直接跳变
-                          └─→ s_lvgl_queue   → lvgl_task (5)   → EC11 按键切换图片
+                          ├─→ s_lvgl_queue   → lvgl_task (5)   → EC11 按键切换图片
+                          └─→ s_audio_queue  → audio_task (7)  → 播报固定距离过近告警
 
 hcsr04_task (core 1, 优先级 10) ──→ event_broker(EVENT_TYPE_HCSR04_DISTANCE) ──→ s_hcsr04_queue ──→ lvgl_task → 距离标签
 ```
@@ -174,11 +181,12 @@ hcsr04_task (core 1, 优先级 10) ──→ event_broker(EVENT_TYPE_HCSR04_DIST
 - ✅ WS2812 RGB LED 正常，颜色直接跟随角度跳变（无渐变）
 - ✅ GC9A01 1.28" 圆形 LCD 正常，EC11 按键可切换表情图片
 - ✅ HC-SR04 超声波测距正常，5Hz 持续测量，屏幕顶部青色标签实时显示距离
+- ✅ HC-SR04 距离小于 10cm 时可通过 I2S 功放播报一次“距离过近”，3 秒内不会重复触发
 
 ### EC11 架构说明
 - **旋转检测**：`ec11_reader_task` 以 `2ms` 周期轮询 CLK/DT 电平，通过 `CLK` 下降沿判断方向和步进。完全在任务上下文执行，无需担心 ISR 阻塞问题。
 - **按键检测**：SW 使用 GPIO 下降沿中断 + 200ms 消抖，ISR 内直接调用 `event_broker_broadcast`，不调用任何阻塞 API。
-- **`consumer_task`**（优先级 18）订阅事件总线，收到事件后立即计算 servo_target 和 RGB 颜色，广播到 3 个私有队列。
+- **`consumer_task`**（优先级 18）订阅事件总线，收到事件后立即计算 servo_target 和 RGB 颜色；当 HC-SR04 距离低于 10cm 且未锁存、音频未播放、冷却时间已到时，向 `s_audio_queue` 投递一次固定告警请求。
 
 ### 最近修改记录
 1. **舵机初始化修复**：`hal_servo_init()` 在完成初始化后立即下发默认角度，避免上电后中位不稳定。
@@ -191,6 +199,7 @@ hcsr04_task (core 1, 优先级 10) ──→ event_broker(EVENT_TYPE_HCSR04_DIST
 8. **GC9A01 启动修复**：默认关闭启动期 `spi_test`，避免 bring-up 测试影响正式显示任务。
 9. **HC-SR04 超声波测距集成**（2026-05-08）：`hal_hcsr04.h/.c`，Trig=GPIO8/Echo=GPIO9，busy-wait 精确定时；`hcsr04_task` 运行于 **core 1**（避免 SPI 总线争抢导致任务饿死）；`EVENT_TYPE_HCSR04_DISTANCE` 通过 event_broker 广播；距离标签显示于 GC9A01 屏幕顶部中央（青色 + 黑底）。
 10. **接口自洽修复**（2026-05-08）：`hal_ec11_get_queue()` 现在返回独立 EC11 队列，元素类型为 `hal_ec11_msg_t`；`event_broker_get_queue()` 也会真正收到全部 broker 事件。
+11. **I2S 距离过近告警**（2026-05-09）：新增 `hal_audio_out.h/.c`、`voice_assets.*`、`voice_prompt.*`；I2S 引脚使用 GPIO13/14/15 输出，GPIO16 预留麦克风输入，GPIO17/MCLK 当前未驱动；`consumer_task` 订阅 `EVENT_TYPE_HCSR04_DISTANCE`，在距离小于 10cm 时触发 `audio_task` 播报固定中文语音，并做锁存与 3 秒节流。
 
 ---
 
@@ -239,8 +248,8 @@ cd /home/mikurubeam/Desktop/espattack
 - **EC11 旋转**：更新逻辑角度，驱动 SG90 与 RGB 同步变化。
 - **EC11 按下**：逻辑角度复位到 `CFG_ENCODER_RESET`，同时 GC9A01 切换下一张图片。
 - **默认显示模式**：`images_display_2`，循环显示 4 张表情图。
-- **HC-SR04 测距**：持续在 core 1 运行，5Hz，屏幕顶部青色标签实时显示距离。
+- **HC-SR04 测距**：持续在 core 1 运行，5Hz，屏幕顶部青色标签实时显示距离；当距离小于 10cm 时，I2S 功放会播报一次“距离过近”，3 秒内最多一次。
 - **已知问题**：无阻塞级问题；若快速旋转仍偶发丢步，优先检查机械编码器本体与供电噪声。
 
 *文档维护者：AI Agent + 人类开发者*  
-*最后一次更新：2026-05-08*
+*最后一次更新：2026-05-20*

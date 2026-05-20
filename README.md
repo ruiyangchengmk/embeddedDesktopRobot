@@ -7,6 +7,7 @@
 - `WS2812` 按角度实时变色
 - `GC9A01` 在按下 `EC11` 按键时切换图片
 - `HC-SR04` 超声波实时测距，屏幕顶部显示距离
+- `I2S` 功放模块在距离小于 `10cm` 时播报一次“距离过近”（3 秒内最多一次）
 
 当前版本以本地模式为主，网络层代码仍保留在仓库中，但默认不参与固件运行。
 
@@ -32,9 +33,15 @@
 | WS2812 RGB | DIN | GPIO48 |
 | HC-SR04 超声波 | Trig | GPIO8 |
 | HC-SR04 超声波 | Echo | GPIO9 |
+| I2S 音频模块 | BCLK | GPIO13 |
+| I2S 音频模块 | LRCLK / WS | GPIO14 |
+| I2S 音频模块 | SDA / DOUT | GPIO15 |
+| I2S 音频模块 | DATA / DIN | GPIO16 |
+| I2S 音频模块 | MCLK / CLK | GPIO17（可选，当前固件未驱动） |
 
 说明：
-- `GPIO3` 上仍有蜂鸣器相关代码，但当前默认启动链路未启用。
+- 当前固件只启用 I2S 音频输出，麦克风输入引脚已预留但还未接入主流程。
+- `GPIO3` 上仍保留历史蜂鸣器代码，但当前默认启动链路未启用。
 - `GC9A01` 正常启动时会先执行 `hal_gc9a01_init()`，再启动 `lvgl_task`。
 
 ## 快速开始
@@ -102,7 +109,11 @@ embeddedDesktopRobot/
 │       ├── hal_rgb.h/.c       # WS2812 RGB
 │       ├── hal_ec11.h/.c      # EC11 编码器
 │       ├── hal_gc9a01.h/.c    # GC9A01 SPI LCD
+│       ├── hal_audio_out.h/.c # I2S 音频输出
 │       └── hal_buzzer.h/.c    # 蜂鸣器（代码保留，当前默认未启用）
+│   ├── voice_assets.h/.c      # 语音素材索引
+│   ├── voice_prompt.h/.c      # 固定中文语音播报
+│   └── audio_assets/*.pcm     # 内嵌语音片段（16kHz/16-bit PCM）
 └── docs/
     ├── AGENTS.md              # AI Agent 快速介入文档
     ├── ARCHITECTURE.md        # 架构/API 文档
@@ -129,3 +140,4 @@ embeddedDesktopRobot/
 - `servo_task` 只保留最新目标值，并按误差自适应步进，避免快速旋转时严重滞后
 - `rgb_task` 也只保留最新颜色目标，避免无意义的旧颜色积压
 - `lvgl_task` 默认使用 `images_display_2` 模式，按下 `EC11` 会在 4 张表情图间切换
+- `audio_task` 会在 `HC-SR04` 距离小于 `10cm` 时播报一次“距离过近”，并做 `3s` 节流

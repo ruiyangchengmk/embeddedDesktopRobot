@@ -19,6 +19,8 @@
 | v0.11 | 2026-04-24 | EC11→SG90 稳定性修复：舵机初始化时序修正、EC11 轮询 2ms、覆盖队列 + 自适应步进；GC9A01 启动链路与按键切图恢复 |
 | v0.12 | 2026-05-08 | HC-SR04 超声波测距集成：新增 hal_hcsr04.h/.c，Trig=GPIO8/Echo=GPIO9；`hcsr04_task` 运行于 core 1（解决 SPI 总线争抢导致的饿死问题）；`EVENT_TYPE_HCSR04_DISTANCE` 通过 event_broker 广播；距离标签实时显示于 GC9A01 屏幕顶部中央（青色 + 黑底）；表情图模式还原为中心全尺寸。 |
 | v0.13 | 2026-05-08 | 配置与接口自洽收尾：`gen_config.py` 增加严格校验；`hal_ec11_get_queue()` 改为返回独立 EC11 队列（`hal_ec11_msg_t`）；`event_broker_get_queue()` 真正接收所有 broker 事件；`rgb` 改为单槽覆盖队列；任务创建与 GC9A01 启动增加失败保护；保留网络层补齐 NVS 初始化与 MQTT topic/payload 校验。 |
+| v0.14 | 2026-05-09 | I2S 距离过近告警：新增 `hal_audio_out`、`voice_assets`、`voice_prompt`；GPIO13/14/15 驱动功放，GPIO17 作为可选 MCLK 预留，GPIO16 预留麦克风；HC-SR04 距离小于 10cm 时播报固定中文语音“距离过近”，并做 3 秒节流。 |
+| v0.15 | 2026-05-20 | 在线女声 PCM 素材固化：告警改为固定中文自然女声；修复音频生成时 `silenceremove` 误把句中停顿当结尾导致只播放开头的问题；增加上电长音频自检与素材时长日志，I2S 播放保持完整读完后再接受下一次告警。 |
 
 ---
 

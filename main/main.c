@@ -29,6 +29,7 @@
 
 #include "hal/hal_servo.h"
 #include "hal/hal_rgb.h"
+#include "hal/hal_audio_out.h"
 #include "hal/hal_ec11.h"
 #include "hal/hal_gc9a01.h"
 #include "hal/hal_hcsr04.h"
@@ -38,11 +39,15 @@
 #endif
 
 #include "event_broker.h"
+#include "voice_prompt.h"
 #include "lvgl.h"
 #include "lvgl/src/draw/sw/lv_draw_sw.h"
 
 static const char *TAG = "APP";
 #define APP_RUN_GC9A01_SPI_TEST 0
+#define TOO_CLOSE_THRESHOLD_CM_X100 1000
+#define TOO_CLOSE_RELEASE_CM_X100   1200
+#define TOO_CLOSE_COOLDOWN_US       (3000000LL)
 
 // ================================================================
 // 消费者私有队列（每个任务独立，避免互斥竞争）
@@ -52,7 +57,9 @@ static QueueHandle_t s_rgb_queue = NULL;
 static QueueHandle_t s_lvgl_queue = NULL;
 static QueueHandle_t s_hcsr04_queue = NULL;
 static QueueHandle_t s_consumer_queue = NULL;
+static QueueHandle_t s_audio_queue = NULL;
 static int64_t s_last_consumer_log_us = 0;
+static volatile bool s_audio_playing = false;
 
 // 消费者消息格式
 typedef struct {
@@ -61,6 +68,10 @@ typedef struct {
     uint8_t r, g, b;   // 对应 RGB 颜色
     int button;         // 1=按键按下，0=正常旋转
 } angle_msg_t;
+
+typedef struct {
+    uint8_t play_warning;
+} audio_request_t;
 
 static void send_servo_msg(const angle_msg_t *msg)
 {
@@ -75,6 +86,11 @@ static void send_lvgl_msg(const angle_msg_t *msg)
 static void send_rgb_msg(const angle_msg_t *msg)
 {
     xQueueOverwrite(s_rgb_queue, msg);
+}
+
+static void send_audio_request(const audio_request_t *req)
+{
+    (void)xQueueSend(s_audio_queue, req, 0);
 }
 
 static bool create_task_checked(TaskFunction_t task_fn,
@@ -134,9 +150,36 @@ static void color_from_angle(int angle, uint8_t *r, uint8_t *g, uint8_t *b)
 static void consumer_task(void *arg)
 {
     broker_event_t ev;
+    int64_t last_too_close_warn_us = -TOO_CLOSE_COOLDOWN_US;
+    bool too_close_latched = false;
 
     while (1) {
         if (xQueueReceive(s_consumer_queue, &ev, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+
+        if (ev.type == EVENT_TYPE_HCSR04_DISTANCE) {
+            int dist_cm_x100 = (int)ev.value;
+            int64_t now_us = esp_timer_get_time();
+
+            if (dist_cm_x100 >= TOO_CLOSE_RELEASE_CM_X100) {
+                too_close_latched = false;
+            }
+
+            if (dist_cm_x100 >= 0 &&
+                dist_cm_x100 < TOO_CLOSE_THRESHOLD_CM_X100 &&
+                !too_close_latched &&
+                !s_audio_playing &&
+                (now_us - last_too_close_warn_us) >= TOO_CLOSE_COOLDOWN_US) {
+                audio_request_t req = {
+                    .play_warning = 1,
+                };
+                send_audio_request(&req);
+                too_close_latched = true;
+                last_too_close_warn_us = now_us;
+                ESP_LOGI(TAG, "[audio] too close warning queued: %.2f cm",
+                         dist_cm_x100 / 100.0f);
+            }
             continue;
         }
 
@@ -234,7 +277,30 @@ static void rgb_task(void *arg)
 }
 
 // ================================================================
-// 消费者3：HC-SR04 超声波测距（每 100ms 读取并广播）
+// 消费者3：I2S 语音播报
+// ================================================================
+static void audio_task(void *arg)
+{
+    if (hal_audio_out_init() != HAL_OK) {
+        ESP_LOGW(TAG, "[audio] init failed, audio task disabled");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    while (1) {
+        audio_request_t req;
+        if (xQueueReceive(s_audio_queue, &req, portMAX_DELAY) == pdTRUE) {
+            s_audio_playing = true;
+            if (req.play_warning && voice_prompt_play_too_close_warning() != HAL_OK) {
+                ESP_LOGW(TAG, "[audio] playback failed");
+            }
+            s_audio_playing = false;
+        }
+    }
+}
+
+// ================================================================
+// 消费者4：HC-SR04 超声波测距（每 100ms 读取并广播）
 // ================================================================
 static void hcsr04_task(void *arg)
 {
@@ -252,7 +318,7 @@ static void hcsr04_task(void *arg)
 }
 
 // ================================================================
-// 消费者4：GC9A01 显示（图片模式或时钟模式）
+// 消费者5：GC9A01 显示（图片模式或时钟模式）
 // ================================================================
 static lv_obj_t *s_gc_image = NULL;
 static lv_obj_t *s_dist_label = NULL;
@@ -466,8 +532,10 @@ void app_main(void)
     s_lvgl_queue = xQueueCreate(1, sizeof(angle_msg_t));
     s_hcsr04_queue = xQueueCreate(16, sizeof(broker_event_t));
     s_consumer_queue = xQueueCreate(32, sizeof(broker_event_t));
+    s_audio_queue = xQueueCreate(1, sizeof(audio_request_t));
 
-    if (!s_servo_queue || !s_rgb_queue || !s_lvgl_queue || !s_hcsr04_queue || !s_consumer_queue) {
+    if (!s_servo_queue || !s_rgb_queue || !s_lvgl_queue || !s_hcsr04_queue ||
+        !s_consumer_queue || !s_audio_queue) {
         ESP_LOGE(TAG, "Queue create failed");
         return;
     }
@@ -476,6 +544,7 @@ void app_main(void)
     ESP_ERROR_CHECK(event_broker_init() == ESP_OK ? ESP_OK : ESP_FAIL);
     ESP_ERROR_CHECK(event_broker_subscribe(EVENT_TYPE_ENCODER_ROTATE, s_consumer_queue));
     ESP_ERROR_CHECK(event_broker_subscribe(EVENT_TYPE_ENCODER_CLICK, s_consumer_queue));
+    ESP_ERROR_CHECK(event_broker_subscribe(EVENT_TYPE_HCSR04_DISTANCE, s_consumer_queue));
     ESP_ERROR_CHECK(event_broker_subscribe(EVENT_TYPE_HCSR04_DISTANCE, s_hcsr04_queue));
 
     // ---- 先初始化不会主动产生日志风暴的 HAL ----
@@ -486,6 +555,7 @@ void app_main(void)
     if (!create_task_checked(consumer_task, "consumer", 4096, 18, 0) ||
         !create_task_checked(servo_task, "servo", 4096, 15, 0) ||
         !create_task_checked(rgb_task, "rgb", 4096, 14, 0) ||
+        !create_task_checked(audio_task, "audio", 6144, 7, 1) ||
         !create_task_checked(hcsr04_task, "hcsr04", 2048, 10, 1)) {
         return;
     }
